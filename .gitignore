@@ -137,3 +137,39 @@ dist
 # Vite logs files
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# Python cache / compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+env/
+venv/
+ENV/
+
+# Logs & outputs
+*.log
+*.out
+*.tmp
+*.DS_Store
+
+# Certificates / JSON reports (wipes)
+certs/
+*.json
+*.pdf
+
+# OS-specific
+Thumbs.db
+ehthumbs.db
+.DS_Store
+desktop.ini
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+
+# Proto stuff
+dummy.txt
