@@ -173,3 +173,72 @@ desktop.ini
 
 # Proto stuff
 dummy.txt
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+env/
+venv/
+ENV/
+
+# Logs & outputs
+*.log
+*.out
+*.tmp
+*.DS_Store
+
+# Certificates / Reports
+certs/
+*.json
+*.pdf
+
+# --- C / C++ build artifacts ---
+*.o
+*.obj
+*.so
+*.dll
+*.dylib
+*.pyd
+*.a
+*.lib
+*.exp
+*.pdb
+*.mod
+*.smod
+
+# Build directories
+build/
+dist/
+*.egg-info/
+.wheelhouse/
+
+# CMake / Makefile artifacts
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# --- OS-specific ---
+Thumbs.db
+ehthumbs.db
+.DS_Store
+desktop.ini
+
+# --- IDEs & Editors ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*.kate-swp
+
+# --- Other ---
+*.bak
+*.old
+*.orig
+*.tmp
+
+# I know there are duplivates and I dont care, cant be bothered to clean it up, if you want to do it, be my guest.
