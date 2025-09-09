@@ -22,30 +22,85 @@ from typing import Dict, List, Any
 CERTS_DIR = "certs"
 CHUNK_SIZE = 1024 * 1024 * 128  # 128MB chunks
 
-def requires_admin() -> bool:
-    """Check if script is running with admin privileges."""
+# Windows API Constants
+FSCTL_LOCK_VOLUME = 0x00090018
+FSCTL_DISMOUNT_VOLUME = 0x00090020
+IOCTL_DISK_GET_LENGTH_INFO = 0x0007405C
+FILE_READ_ATTRIBUTES = 0x0080
+FILE_WRITE_ATTRIBUTES = 0x0100
+INVALID_HANDLE_VALUE = -1
+
+def obtain_lock_force(drive_handle) -> bool:
+    """Force obtain a lock on the drive with multiple attempts."""
+    for _ in range(20):  # Try 20 times
+        try:
+            # Try to lock volume
+            win32file.DeviceIoControl(
+                drive_handle,
+                FSCTL_LOCK_VOLUME,
+                None,
+                None
+            )
+            return True
+        except Exception:
+            time.sleep(0.5)  # Wait 500ms between attempts
+    return False
+
+def enable_privileges() -> bool:
+    """Enable necessary privileges for disk access."""
     try:
-        return ctypes.windll.shell32.IsUserAnAdmin()
-    except:
+        import win32security
+        import ntsecuritycon
+
+        # Get the process token
+        flags = ntsecuritycon.TOKEN_ADJUST_PRIVILEGES | ntsecuritycon.TOKEN_QUERY
+        htoken = win32security.OpenProcessToken(win32api.GetCurrentProcess(), flags)
+        
+        # Enable SeBackupPrivilege and SeRestorePrivilege
+        privileges = [
+            (win32security.LookupPrivilegeValue(None, "SeBackupPrivilege"), win32con.SE_PRIVILEGE_ENABLED),
+            (win32security.LookupPrivilegeValue(None, "SeRestorePrivilege"), win32con.SE_PRIVILEGE_ENABLED),
+            (win32security.LookupPrivilegeValue(None, "SeSecurityPrivilege"), win32con.SE_PRIVILEGE_ENABLED),
+            (win32security.LookupPrivilegeValue(None, "SeTakeOwnershipPrivilege"), win32con.SE_PRIVILEGE_ENABLED),
+        ]
+        
+        # Adjust token privileges
+        win32security.AdjustTokenPrivileges(htoken, 0, privileges)
+        return True
+    except Exception as e:
+        print(f"Failed to enable privileges: {str(e)}")
+        return False
+
+def requires_admin() -> bool:
+    """Check if script is running with admin privileges and enable necessary privileges."""
+    try:
+        is_admin = ctypes.windll.shell32.IsUserAnAdmin()
+        if is_admin:
+            return enable_privileges()
+        return False
+    except Exception as e:
+        print(f"Admin check failed: {str(e)}")
         return False
 
 def get_physical_drives() -> List[Dict[str, Any]]:
-    """List physical removable drives using WMI."""
+    """List physical removable drives using WMI with enhanced error handling."""
     devices = []
-    c = wmi.WMI()
-    
-    for drive in c.Win32_DiskDrive():
-        if drive.MediaType and ("Removable Media" in drive.MediaType or "USB" in drive.MediaType):
-            size = int(drive.Size)
-            size_gb = size / (1024**3)
-            devices.append({
-                "name": r"\\.\PHYSICALDRIVE" + str(drive.Index),
-                "friendly_name": drive.Caption,
-                "size": size,
-                "size_gb": round(size_gb, 2)
-            })
-    
-    return devices
+    try:
+        c = wmi.WMI()
+        for drive in c.Win32_DiskDrive():
+            if drive.MediaType and ("Removable Media" in drive.MediaType or "USB" in drive.MediaType):
+                size = int(drive.Size)
+                size_gb = size / (1024**3)
+                devices.append({
+                    "name": r"\\.\PHYSICALDRIVE" + str(drive.Index),
+                    "friendly_name": drive.Caption,
+                    "size": size,
+                    "size_gb": round(size_gb, 2)
+                })
+        return devices
+    except Exception as e:
+        print(f"Error listing physical drives: {str(e)}")
+        return []
 
 def get_volume_paths(device_index: int) -> List[str]:
     """Get volume paths for a physical drive."""
@@ -71,83 +126,111 @@ def get_volume_paths(device_index: int) -> List[str]:
         return []
 
 def dismount_volume(device_path: str) -> bool:
-    """Dismount all volumes on the physical drive."""
+    """Dismount all volumes on the physical drive with enhanced access rights."""
     try:
         # Extract drive index from physical drive path
         drive_index = int(device_path.rstrip('\\').split('PHYSICALDRIVE')[-1])
         
         # Get all volumes for this drive
         c = wmi.WMI()
+        success = True
+        
+        # Create a Security Descriptor that grants full access
+        import win32security
+        security = win32security.SECURITY_ATTRIBUTES()
+        security.SECURITY_DESCRIPTOR = win32security.SECURITY_DESCRIPTOR()
+        
         for partition in c.Win32_DiskPartition():
             if partition.DiskIndex == drive_index:
                 for logical_disk in c.Win32_LogicalDisk():
                     if logical_disk.DeviceID:
                         try:
-                            # Get volume handle
-                            vol_handle = win32file.CreateFile(
+                            # Get volume handle with explicit security attributes and maximum access rights
+                            vol_handle = win32file.CreateFileW(
                                 f"\\\\.\\{logical_disk.DeviceID[0]}:",
                                 win32con.GENERIC_READ | win32con.GENERIC_WRITE,
                                 win32file.FILE_SHARE_READ | win32file.FILE_SHARE_WRITE,
-                                None,
+                                security,
                                 win32file.OPEN_EXISTING,
-                                0,
+                                win32file.FILE_FLAG_NO_BUFFERING | win32file.FILE_FLAG_WRITE_THROUGH | win32file.FILE_FLAG_SEQUENTIAL_SCAN,
                                 None
                             )
                             
-                            # Lock and dismount volume
+                            if vol_handle == INVALID_HANDLE_VALUE:
+                                print(f"[!] Failed to get handle for {logical_disk.DeviceID}")
+                                success = False
+                                continue
+
+                            # Force obtain lock
+                            if not obtain_lock_force(vol_handle):
+                                print(f"[!] Could not lock {logical_disk.DeviceID}")
+                                success = False
+                                continue
+
+                            # Dismount volume
                             win32file.DeviceIoControl(
                                 vol_handle,
-                                win32file.FSCTL_LOCK_VOLUME,
+                                FSCTL_DISMOUNT_VOLUME,
                                 None,
                                 None
                             )
                             
-                            win32file.DeviceIoControl(
-                                vol_handle,
-                                win32file.FSCTL_DISMOUNT_VOLUME,
-                                None,
-                                None
-                            )
+                            print(f"[+] Successfully dismounted {logical_disk.DeviceID}")
                             
                         except Exception as e:
-                            print(f"[!] Error dismounting {logical_disk.DeviceID}: {e}")
+                            print(f"[!] Error dismounting {logical_disk.DeviceID}: {str(e)}")
+                            success = False
                             continue
-                            
                         finally:
                             try:
                                 win32file.CloseHandle(vol_handle)
                             except:
                                 pass
         
-        # Wait for dismount to complete
-        time.sleep(2)
-        return True
-        
+        return success
+                            
     except Exception as e:
-        print(f"[!] Error during dismount: {e}")
+        print(f"[!] Error in dismount_volume: {str(e)}")
         return False
 
-# Modify the lock_volume function
 def lock_volume(device_path: str) -> bool:
-    """Lock volume for exclusive access."""
+def lock_volume(device_path: str) -> bool:
+    """Lock volume for exclusive access with enhanced privileges."""
     try:
         # First dismount all volumes
         if not dismount_volume(device_path):
             return False
             
-        # Now try to get exclusive access
-        handle = win32file.CreateFile(
+        # Create security attributes for full access
+        security = win32security.SECURITY_ATTRIBUTES()
+        security.SECURITY_DESCRIPTOR = win32security.SECURITY_DESCRIPTOR()
+        
+        # Now try to get exclusive access with enhanced flags
+        handle = win32file.CreateFileW(
             device_path,
-            win32con.GENERIC_READ | win32con.GENERIC_WRITE,
+            win32con.GENERIC_READ | win32con.GENERIC_WRITE | FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES,
             0,  # No sharing
-            None,
+            security,
             win32file.OPEN_EXISTING,
-            0,
+            win32file.FILE_FLAG_NO_BUFFERING | win32file.FILE_FLAG_WRITE_THROUGH | win32file.FILE_FLAG_SEQUENTIAL_SCAN,
             None
         )
         
-        # Keep handle open for exclusive access
-        return bool(handle)
+        if handle == INVALID_HANDLE_VALUE:
+            print("[!] Failed to get handle for device")
+            return False
+            
+        # Try to force lock
+        if not obtain_lock_force(handle):
+            print("[!] Failed to lock device")
+            win32file.CloseHandle(handle)
+            return False
+            
+        return True
+            
+    except Exception as e:
+        print(f"[!] Error locking volume: {str(e)}")
+        return False
         
     except Exception as e:
         print(f"[!] Error locking volume: {e}")
