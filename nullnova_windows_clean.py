@@ -22,12 +22,15 @@ from typing import Dict, List, Any
 
 # Constants
 CERTS_DIR = "certs"
-CHUNK_SIZE = 1024 * 1024 * 128  # 128MB chunks
+CHUNK_SIZE = 1024 * 1024 * 4  # 4MB chunks for better reliability
+MAX_RETRIES = 3
 
 # Windows API Constants
 FSCTL_LOCK_VOLUME = 0x00090018
 FSCTL_DISMOUNT_VOLUME = 0x00090020
 IOCTL_DISK_GET_LENGTH_INFO = 0x0007405C
+GENERIC_READ = 0x80000000
+GENERIC_WRITE = 0x40000000
 GENERIC_ALL = 0x10000000
 FILE_ALL_ACCESS = 0x1F01FF
 OPEN_EXISTING = 3
@@ -36,18 +39,47 @@ FILE_FLAG_WRITE_THROUGH = 0x80000000
 FILE_FLAG_NO_BUFFERING = 0x20000000
 INVALID_HANDLE_VALUE = -1
 
+def force_close_handles(device_path: str) -> None:
+    """Force close any open handles to the device."""
+    try:
+        # Try using handle.exe if available (Sysinternals)
+        if os.path.exists("handle.exe"):
+            os.system(f'handle.exe -accepteula -c "{device_path}" > nul 2>&1')
+            
+        # Fallback: Try to force a garbage collection to release any Python handles
+        import gc
+        gc.collect()
+        
+        # Give the system a moment to release handles
+        time.sleep(0.5)
+    except:
+        pass
+
 def enable_privileges() -> bool:
     """Enable necessary privileges for disk access."""
     try:
         flags = ntsecuritycon.TOKEN_ADJUST_PRIVILEGES | ntsecuritycon.TOKEN_QUERY
         htoken = win32security.OpenProcessToken(win32api.GetCurrentProcess(), flags)
         
-        privileges = [
-            (win32security.LookupPrivilegeValue(None, "SeBackupPrivilege"), win32con.SE_PRIVILEGE_ENABLED),
-            (win32security.LookupPrivilegeValue(None, "SeRestorePrivilege"), win32con.SE_PRIVILEGE_ENABLED),
-            (win32security.LookupPrivilegeValue(None, "SeSecurityPrivilege"), win32con.SE_PRIVILEGE_ENABLED),
-            (win32security.LookupPrivilegeValue(None, "SeTakeOwnershipPrivilege"), win32con.SE_PRIVILEGE_ENABLED),
+        # List of all privileges we need
+        privilege_list = [
+            "SeBackupPrivilege",
+            "SeRestorePrivilege",
+            "SeSecurityPrivilege",
+            "SeTakeOwnershipPrivilege",
+            "SeManageVolumePrivilege",  # Added for volume management
+            "SeDebugPrivilege"  # Added for low-level access
         ]
+        
+        privileges = []
+        for priv in privilege_list:
+            try:
+                privileges.append(
+                    (win32security.LookupPrivilegeValue(None, priv), win32con.SE_PRIVILEGE_ENABLED)
+                )
+            except Exception as e:
+                print(f"Warning: Couldn't lookup {priv}: {str(e)}")
+                
         
         win32security.AdjustTokenPrivileges(htoken, 0, privileges)
         return True
@@ -273,6 +305,23 @@ def create_wipe_certificate(device_info: Dict[str, Any], wipe_type: str = "DoD 5
         print(f"[!] Error creating certificate: {str(e)}")
         return ""
 
+def write_with_retry(handle, data: bytes, chunk_num: int, total_chunks: int) -> bool:
+    """Write data with retry mechanism."""
+    for attempt in range(MAX_RETRIES):
+        try:
+            win32file.WriteFile(handle, data)
+            progress = (chunk_num + 1) / total_chunks * 100
+            print(f"Processing chunk {chunk_num + 1}/{total_chunks} ({progress:.1f}%)", end='\r')
+            return True
+        except Exception as e:
+            if attempt < MAX_RETRIES - 1:
+                print(f"\n[!] Write error, retrying ({attempt + 2}/{MAX_RETRIES})")
+                time.sleep(1)
+            else:
+                print(f"\n[!] Write error at chunk {chunk_num + 1}: {str(e)}")
+                return False
+    return False
+
 def wipe_device(device_path: str, device_info: Dict[str, Any]) -> bool:
     """Perform a DoD 3-pass wipe on the device."""
     handle = None
@@ -291,13 +340,17 @@ def wipe_device(device_path: str, device_info: Dict[str, Any]) -> bool:
         security = win32security.SECURITY_ATTRIBUTES()
         security.SECURITY_DESCRIPTOR = win32security.SECURITY_DESCRIPTOR()
         
+        # Force close any existing handles first
+        force_close_handles(device_path)
+        time.sleep(1)
+        
         handle = win32file.CreateFileW(
             device_path,
-            GENERIC_ALL,
+            GENERIC_WRITE,  # Only request write access
             0,  # No sharing
             security,
             OPEN_EXISTING,
-            FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH | FILE_ATTRIBUTE_NORMAL,
+            FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH,
             None
         )
         
