@@ -36,25 +36,34 @@ class NullNovaGUI:
         main_frame = ttk.Frame(self.root, padding="20")
         main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
 
-        # Device selection
-        ttk.Label(main_frame, text="Device:").grid(row=0, column=0, sticky=tk.W, pady=5)
+        # Add title at the top
+        title_label = ttk.Label(
+            main_frame,
+            text="NULLNOVA",
+            font=("Arial", 24, "bold"),
+            justify="center"
+        )
+        title_label.grid(row=0, column=0, columnspan=4, pady=(0, 20))
+
+        # Device selection (now row 1)
+        ttk.Label(main_frame, text="Device:").grid(row=1, column=0, sticky=tk.W, pady=5)
         self.device_combo = ttk.Combobox(
             main_frame, 
             textvariable=self.selected_device,
             state="readonly",
             width=50
         )
-        self.device_combo.grid(row=0, column=1, columnspan=2, sticky=tk.W, pady=5)
+        self.device_combo.grid(row=1, column=1, columnspan=2, sticky=tk.W, pady=5)
 
         ttk.Button(
             main_frame,
             text="↺",
             command=self.refresh_devices,
             width=3
-        ).grid(row=0, column=3, padx=5)
+        ).grid(row=1, column=3, padx=5)
 
         # Wipe method selection
-        ttk.Label(main_frame, text="Wipe Method:").grid(row=1, column=0, sticky=tk.W, pady=5)
+        ttk.Label(main_frame, text="Wipe Method:").grid(row=2, column=0, sticky=tk.W, pady=5)
         methods = [
             "DoD 5220.22-M (3 passes)",
             "DoD 5220.22-M (7 passes) [Coming Soon]",
@@ -68,12 +77,12 @@ class NullNovaGUI:
             state="readonly",
             width=50
         )
-        method_combo.grid(row=1, column=1, columnspan=2, sticky=tk.W, pady=5)
+        method_combo.grid(row=2, column=1, columnspan=2, sticky=tk.W, pady=5)
         method_combo.set(methods[0])
 
         # Add chunk size selection before the progress frame
         chunk_frame = ttk.Frame(main_frame)
-        chunk_frame.grid(row=2, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=5)
+        chunk_frame.grid(row=3, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=5)
         
         ttk.Label(chunk_frame, text="Chunk Size (MB):").pack(side=tk.LEFT, padx=5)
         chunk_sizes = [16, 32, 64, 128, 256, 512]
@@ -97,7 +106,7 @@ class NullNovaGUI:
             command=self.start_wipe,
             style="Accent.TButton"
         )
-        self.start_button.grid(row=4, column=0, columnspan=4, pady=20)
+        self.start_button.grid(row=5, column=0, columnspan=4, pady=20)
 
         # Style configuration
         style = ttk.Style()
@@ -106,7 +115,7 @@ class NullNovaGUI:
     def setup_progress_frame(self, parent):
         """Setup progress bar and status label."""
         progress_frame = ttk.LabelFrame(parent, text="Progress", padding="10")
-        progress_frame.grid(row=3, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=20)
+        progress_frame.grid(row=4, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=20)
 
         self.progress_var = tk.DoubleVar()
         self.progress_bar = ttk.Progressbar(
@@ -197,32 +206,57 @@ class NullNovaGUI:
 
     def write_pattern(self, device_path, pattern, offset, size):
         """Write a specific pattern to device."""
-        if pattern == 0x00:  # All zeros
-            cmd = f'dd if=/dev/zero of={device_path} bs={size} count=1 seek={offset//size} conv=notrunc status=progress 2>&1\n'
-        elif pattern == 0xFF:  # All ones
-            # Use tr to convert zeros to ones (0xFF)
-            cmd = f'dd if=/dev/zero bs={size} count=1 | tr "\\000" "\\377" | dd of={device_path} bs={size} count=1 seek={offset//size} conv=notrunc status=progress 2>&1\n'
-        else:  # Random data
-            cmd = f'dd if=/dev/urandom of={device_path} bs={size} count=1 seek={offset//size} conv=notrunc status=progress 2>&1\n'
+        try:
+            if pattern == 0x00:  # All zeros
+                cmd = f'dd if=/dev/zero of={device_path} bs={size} count=1 seek={offset//size} conv=notrunc status=progress 2>&1\n'
+                self.elevated_process.stdin.write(cmd)
+            elif pattern == 0xFF:  # All ones
+                # Write ones using a simpler approach with a single dd command
+                cmd = (f'tr "\\000" "\\377" < /dev/zero | dd of={device_path} bs={size} count=1 '
+                      f'seek={offset//size} conv=notrunc status=progress 2>&1\n')
+                self.elevated_process.stdin.write(cmd)
+            else:  # Random data
+                cmd = f'dd if=/dev/urandom of={device_path} bs={size} count=1 seek={offset//size} conv=notrunc status=progress 2>&1\n'
+                self.elevated_process.stdin.write(cmd)
         
-        print(f"[DEBUG] Executing: {cmd.strip()}")
-        self.elevated_process.stdin.write(cmd)
-        self.elevated_process.stdin.flush()
-        
-        # Read dd output until complete
-        while True:
-            output = self.elevated_process.stdout.readline()
-            if not output:
-                break
-            print(f"[DEBUG] dd output: {output.strip()}")
-            if "bytes" in output:  # Progress information
-                try:
-                    bytes_written = int(output.split()[0])
-                    if bytes_written == size:
-                        return True
-                except:
-                    pass
-        return False
+            self.elevated_process.stdin.flush()
+            print(f"[DEBUG] Executing: {cmd.strip()}")
+            
+            success = False
+            timeout = 0
+            while timeout < 30:  # 30 second timeout
+                output = self.elevated_process.stdout.readline()
+                if not output:
+                    timeout += 1
+                    continue
+                
+                output = output.strip()
+                print(f"[DEBUG] Output: {output}")
+                
+                if "bytes" in output:
+                    try:
+                        bytes_written = int(output.split()[0])
+                        if bytes_written >= size:
+                            success = True
+                            break
+                    except Exception as e:
+                        print(f"[DEBUG] Parse error: {e}")
+                elif "records" in output and pattern == 0xFF:
+                    success = True
+                    break
+                    
+            if not success:
+                print("[ERROR] Write operation timed out or failed")
+                return False
+                
+            # Ensure operation completed
+            self.elevated_process.stdin.write("sync\n")
+            self.elevated_process.stdin.flush()
+            return True
+                
+        except Exception as e:
+            print(f"[ERROR] Write pattern failed: {e}")
+            return False
 
     def verify_chunk(self, device_path, offset, size):
         """Verify a chunk of data."""
