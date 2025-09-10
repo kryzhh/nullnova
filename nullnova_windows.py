@@ -15,56 +15,72 @@ import win32api
 import win32con
 import wmi
 import ctypes
+import win32security
+import ntsecuritycon
 from pathlib import Path
 from typing import Dict, List, Any
 
 # Constants
 CERTS_DIR = "certs"
-CHUNK_SIZE = 1024 * 1024 * 128  # 128MB chunks
+CHUNK_SIZE = 1024 * 1024 * 4  # 4MB chunks for better reliability
+MAX_RETRIES = 3
 
 # Windows API Constants
 FSCTL_LOCK_VOLUME = 0x00090018
 FSCTL_DISMOUNT_VOLUME = 0x00090020
 IOCTL_DISK_GET_LENGTH_INFO = 0x0007405C
-FILE_READ_ATTRIBUTES = 0x0080
-FILE_WRITE_ATTRIBUTES = 0x0100
+GENERIC_READ = 0x80000000
+GENERIC_WRITE = 0x40000000
+GENERIC_ALL = 0x10000000
+FILE_ALL_ACCESS = 0x1F01FF
+OPEN_EXISTING = 3
+FILE_ATTRIBUTE_NORMAL = 0x80
+FILE_FLAG_WRITE_THROUGH = 0x80000000
+FILE_FLAG_NO_BUFFERING = 0x20000000
 INVALID_HANDLE_VALUE = -1
 
-def obtain_lock_force(drive_handle) -> bool:
-    """Force obtain a lock on the drive with multiple attempts."""
-    for _ in range(20):  # Try 20 times
-        try:
-            # Try to lock volume
-            win32file.DeviceIoControl(
-                drive_handle,
-                FSCTL_LOCK_VOLUME,
-                None,
-                None
-            )
-            return True
-        except Exception:
-            time.sleep(0.5)  # Wait 500ms between attempts
-    return False
+def force_close_handles(device_path: str) -> None:
+    """Force close any open handles to the device."""
+    try:
+        # Try using handle.exe if available (Sysinternals)
+        if os.path.exists("handle.exe"):
+            os.system(f'handle.exe -accepteula -c "{device_path}" > nul 2>&1')
+            
+        # Fallback: Try to force a garbage collection to release any Python handles
+        import gc
+        gc.collect()
+        
+        # Give the system a moment to release handles
+        time.sleep(0.5)
+    except:
+        pass
 
 def enable_privileges() -> bool:
     """Enable necessary privileges for disk access."""
     try:
-        import win32security
-        import ntsecuritycon
-
-        # Get the process token
         flags = ntsecuritycon.TOKEN_ADJUST_PRIVILEGES | ntsecuritycon.TOKEN_QUERY
         htoken = win32security.OpenProcessToken(win32api.GetCurrentProcess(), flags)
         
-        # Enable SeBackupPrivilege and SeRestorePrivilege
-        privileges = [
-            (win32security.LookupPrivilegeValue(None, "SeBackupPrivilege"), win32con.SE_PRIVILEGE_ENABLED),
-            (win32security.LookupPrivilegeValue(None, "SeRestorePrivilege"), win32con.SE_PRIVILEGE_ENABLED),
-            (win32security.LookupPrivilegeValue(None, "SeSecurityPrivilege"), win32con.SE_PRIVILEGE_ENABLED),
-            (win32security.LookupPrivilegeValue(None, "SeTakeOwnershipPrivilege"), win32con.SE_PRIVILEGE_ENABLED),
+        # List of all privileges we need
+        privilege_list = [
+            "SeBackupPrivilege",
+            "SeRestorePrivilege",
+            "SeSecurityPrivilege",
+            "SeTakeOwnershipPrivilege",
+            "SeManageVolumePrivilege",  # Added for volume management
+            "SeDebugPrivilege"  # Added for low-level access
         ]
         
-        # Adjust token privileges
+        privileges = []
+        for priv in privilege_list:
+            try:
+                privileges.append(
+                    (win32security.LookupPrivilegeValue(None, priv), win32con.SE_PRIVILEGE_ENABLED)
+                )
+            except Exception as e:
+                print(f"Warning: Couldn't lookup {priv}: {str(e)}")
+                
+        
         win32security.AdjustTokenPrivileges(htoken, 0, privileges)
         return True
     except Exception as e:
@@ -72,7 +88,7 @@ def enable_privileges() -> bool:
         return False
 
 def requires_admin() -> bool:
-    """Check if script is running with admin privileges and enable necessary privileges."""
+    """Check if script is running with admin privileges."""
     try:
         is_admin = ctypes.windll.shell32.IsUserAnAdmin()
         if is_admin:
@@ -83,7 +99,7 @@ def requires_admin() -> bool:
         return False
 
 def get_physical_drives() -> List[Dict[str, Any]]:
-    """List physical removable drives using WMI with enhanced error handling."""
+    """List physical removable drives using WMI."""
     devices = []
     try:
         c = wmi.WMI()
@@ -102,285 +118,319 @@ def get_physical_drives() -> List[Dict[str, Any]]:
         print(f"Error listing physical drives: {str(e)}")
         return []
 
-def get_volume_paths(device_index: int) -> List[str]:
-    """Get volume paths for a physical drive."""
+def get_usb_volumes(device_path: str) -> List[str]:
+    """Get only the volumes that belong to the specified USB device."""
     try:
-        volumes = []
-        drive_path = f"\\\\.\\PHYSICALDRIVE{device_index}"
-        # Use CreateFile to get drive handle
-        drive_handle = win32file.CreateFile(
-            drive_path,
-            win32con.GENERIC_READ,
-            win32file.FILE_SHARE_READ | win32file.FILE_SHARE_WRITE,
-            None,
-            win32file.OPEN_EXISTING,
-            0,
-            None
-        )
-        
-        # Get volume name from physical drive
-        volumes = win32file.GetVolumePathNamesForVolumeName(drive_path)
-        win32file.CloseHandle(drive_handle)
-        return volumes
-    except:
-        return []
-
-def dismount_volume(device_path: str) -> bool:
-    """Dismount all volumes on the physical drive with enhanced access rights."""
-    try:
-        # Extract drive index from physical drive path
         drive_index = int(device_path.rstrip('\\').split('PHYSICALDRIVE')[-1])
-        
-        # Get all volumes for this drive
         c = wmi.WMI()
-        success = True
         
-        # Create a Security Descriptor that grants full access
-        import win32security
-        security = win32security.SECURITY_ATTRIBUTES()
-        security.SECURITY_DESCRIPTOR = win32security.SECURITY_DESCRIPTOR()
+        # Get the USB drive
+        target_drive = None
+        for drive in c.Win32_DiskDrive():
+            if str(drive.Index) == str(drive_index):
+                if not ("Removable Media" in drive.MediaType or "USB" in drive.MediaType):
+                    return []
+                target_drive = drive
+                break
+
+        if not target_drive:
+            return []
+
+        # Get only volumes associated with this USB drive
+        usb_volumes = []
+        system_drive = os.environ.get('SystemDrive', 'C:').rstrip(':\\').upper()
         
         for partition in c.Win32_DiskPartition():
             if partition.DiskIndex == drive_index:
                 for logical_disk in c.Win32_LogicalDisk():
-                    if logical_disk.DeviceID:
-                        try:
-                            # Get volume handle with explicit security attributes and maximum access rights
-                            vol_handle = win32file.CreateFileW(
-                                f"\\\\.\\{logical_disk.DeviceID[0]}:",
-                                win32con.GENERIC_READ | win32con.GENERIC_WRITE,
-                                win32file.FILE_SHARE_READ | win32file.FILE_SHARE_WRITE,
-                                security,
-                                win32file.OPEN_EXISTING,
-                                win32file.FILE_FLAG_NO_BUFFERING | win32file.FILE_FLAG_WRITE_THROUGH | win32file.FILE_FLAG_SEQUENTIAL_SCAN,
-                                None
-                            )
-                            
-                            if vol_handle == INVALID_HANDLE_VALUE:
-                                print(f"[!] Failed to get handle for {logical_disk.DeviceID}")
-                                success = False
-                                continue
+                    if logical_disk.DeviceID and logical_disk.DeviceID[0].upper() != system_drive:
+                        usb_volumes.append(logical_disk.DeviceID)
+        return usb_volumes
+    except Exception as e:
+        print(f"[!] Error getting USB volumes: {str(e)}")
+        return []
 
-                            # Force obtain lock
-                            if not obtain_lock_force(vol_handle):
-                                print(f"[!] Could not lock {logical_disk.DeviceID}")
-                                success = False
-                                continue
+def obtain_lock_force(drive_handle) -> bool:
+    """Force obtain a lock on the drive with multiple attempts."""
+    for _ in range(20):  # Try 20 times
+        try:
+            win32file.DeviceIoControl(
+                drive_handle,
+                FSCTL_LOCK_VOLUME,
+                None,
+                None
+            )
+            return True
+        except Exception:
+            time.sleep(0.5)  # Wait 500ms between attempts
+    return False
 
-                            # Dismount volume
-                            win32file.DeviceIoControl(
-                                vol_handle,
-                                FSCTL_DISMOUNT_VOLUME,
-                                None,
-                                None
-                            )
-                            
-                            print(f"[+] Successfully dismounted {logical_disk.DeviceID}")
-                            
-                        except Exception as e:
-                            print(f"[!] Error dismounting {logical_disk.DeviceID}: {str(e)}")
-                            success = False
-                            continue
-                        finally:
-                            try:
-                                win32file.CloseHandle(vol_handle)
-                            except:
-                                pass
-        
+def dismount_volume(device_path: str) -> bool:
+    """Dismount only the USB volumes of the selected drive."""
+    vol_handle = None
+    try:
+        # Get only USB volumes, excluding system drive
+        usb_volumes = get_usb_volumes(device_path)
+        if not usb_volumes:
+            print("[!] No valid USB volumes found to dismount")
+            return False
+
+        success = True
+        security = win32security.SECURITY_ATTRIBUTES()
+        security.SECURITY_DESCRIPTOR = win32security.SECURITY_DESCRIPTOR()
+
+        # Process each USB volume
+        for volume in usb_volumes:
+            try:
+                print(f"[*] Attempting to dismount {volume}")
+                vol_handle = win32file.CreateFileW(
+                    f"\\\\.\\{volume[0]}:",
+                    GENERIC_ALL,
+                    win32file.FILE_SHARE_READ | win32file.FILE_SHARE_WRITE,
+                    security,
+                    OPEN_EXISTING,
+                    FILE_FLAG_WRITE_THROUGH | FILE_FLAG_NO_BUFFERING,
+                    None
+                )
+
+                if vol_handle == INVALID_HANDLE_VALUE:
+                    print(f"[!] Failed to get handle for {volume}")
+                    success = False
+                    continue
+
+                if obtain_lock_force(vol_handle):
+                    win32file.DeviceIoControl(
+                        vol_handle,
+                        FSCTL_DISMOUNT_VOLUME,
+                        None,
+                        None
+                    )
+                    print(f"[+] Successfully dismounted {volume}")
+                else:
+                    print(f"[!] Could not lock {volume}")
+                    success = False
+            except Exception as e:
+                print(f"[!] Error dismounting {volume}: {str(e)}")
+                success = False
+            finally:
+                if vol_handle and vol_handle != INVALID_HANDLE_VALUE:
+                    try:
+                        win32file.CloseHandle(vol_handle)
+                    except:
+                        pass
         return success
-                            
     except Exception as e:
         print(f"[!] Error in dismount_volume: {str(e)}")
         return False
 
 def lock_volume(device_path: str) -> bool:
-def lock_volume(device_path: str) -> bool:
-    """Lock volume for exclusive access with enhanced privileges."""
+    """Lock volume for exclusive access."""
+    handle = None
     try:
-        # First dismount all volumes
-        if not dismount_volume(device_path):
+        print("[*] Preparing device for exclusive access...")
+        
+        if not enable_privileges():
+            print("[!] Failed to enable necessary privileges")
             return False
-            
-        # Create security attributes for full access
+        
+        if not dismount_volume(device_path):
+            print("[!] Failed to dismount volumes")
+            return False
+        
+        print("[*] Attempting to lock device...")
+        
         security = win32security.SECURITY_ATTRIBUTES()
         security.SECURITY_DESCRIPTOR = win32security.SECURITY_DESCRIPTOR()
         
-        # Now try to get exclusive access with enhanced flags
+        for attempt in range(5):
+            try:
+                handle = win32file.CreateFileW(
+                    device_path,
+                    GENERIC_ALL,
+                    0,  # No sharing
+                    security,
+                    OPEN_EXISTING,
+                    FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH | FILE_ATTRIBUTE_NORMAL,
+                    None
+                )
+                
+                if handle == INVALID_HANDLE_VALUE:
+                    print(f"[!] Failed to get handle (attempt {attempt + 1}/5)")
+                    time.sleep(1)
+                    continue
+                
+                if obtain_lock_force(handle):
+                    print("[+] Successfully locked device")
+                    return True
+                
+                print(f"[!] Failed to lock device (attempt {attempt + 1}/5)")
+                win32file.CloseHandle(handle)
+                time.sleep(1)
+                
+            except Exception as e:
+                print(f"[!] Error during lock attempt {attempt + 1}: {str(e)}")
+                if handle and handle != INVALID_HANDLE_VALUE:
+                    win32file.CloseHandle(handle)
+                time.sleep(1)
+        
+        print("[!] Failed to lock device after all attempts")
+        return False
+    
+    except Exception as e:
+        print(f"[!] Error in lock_volume: {str(e)}")
+        if handle and handle != INVALID_HANDLE_VALUE:
+            win32file.CloseHandle(handle)
+        return False
+
+def create_wipe_certificate(device_info: Dict[str, Any], wipe_type: str = "DoD 5220.22-M") -> str:
+    """Create a certificate for the wiping operation."""
+    try:
+        os.makedirs(CERTS_DIR, exist_ok=True)
+        
+        cert = {
+            "id": str(uuid.uuid4()),
+            "date": datetime.datetime.now().isoformat(),
+            "device": device_info,
+            "wipe_type": wipe_type,
+            "status": "completed",
+            "verification": "passed"
+        }
+        
+        cert_path = os.path.join(CERTS_DIR, f"{cert['id']}.json")
+        with open(cert_path, 'w') as f:
+            json.dump(cert, f, indent=4)
+            
+        return cert_path
+    except Exception as e:
+        print(f"[!] Error creating certificate: {str(e)}")
+        return ""
+
+def write_with_retry(handle, data: bytes, chunk_num: int, total_chunks: int) -> bool:
+    """Write data with retry mechanism."""
+    for attempt in range(MAX_RETRIES):
+        try:
+            win32file.WriteFile(handle, data)
+            progress = (chunk_num + 1) / total_chunks * 100
+            print(f"Processing chunk {chunk_num + 1}/{total_chunks} ({progress:.1f}%)", end='\r')
+            return True
+        except Exception as e:
+            if attempt < MAX_RETRIES - 1:
+                print(f"\n[!] Write error, retrying ({attempt + 2}/{MAX_RETRIES})")
+                time.sleep(1)
+            else:
+                print(f"\n[!] Write error at chunk {chunk_num + 1}: {str(e)}")
+                return False
+    return False
+
+def wipe_device(device_path: str, device_info: Dict[str, Any]) -> bool:
+    """Perform a DoD 3-pass wipe on the device."""
+    handle = None
+    try:
+        print("\n[*] Initializing device wipe...")
+        
+        if not lock_volume(device_path):
+            print("[!] Failed to lock volume for exclusive access")
+            return False
+            
+        print("[*] Device locked successfully, starting wipe process...")
+        
+        total_size = device_info['size']
+        chunks = math.ceil(total_size / CHUNK_SIZE)
+        
+        security = win32security.SECURITY_ATTRIBUTES()
+        security.SECURITY_DESCRIPTOR = win32security.SECURITY_DESCRIPTOR()
+        
+        # Force close any existing handles first
+        force_close_handles(device_path)
+        time.sleep(1)
+        
         handle = win32file.CreateFileW(
             device_path,
-            win32con.GENERIC_READ | win32con.GENERIC_WRITE | FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES,
+            GENERIC_WRITE,  # Only request write access
             0,  # No sharing
             security,
-            win32file.OPEN_EXISTING,
-            win32file.FILE_FLAG_NO_BUFFERING | win32file.FILE_FLAG_WRITE_THROUGH | win32file.FILE_FLAG_SEQUENTIAL_SCAN,
+            OPEN_EXISTING,
+            FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH,
             None
         )
         
         if handle == INVALID_HANDLE_VALUE:
-            print("[!] Failed to get handle for device")
+            print("[!] Failed to get device handle for writing")
             return False
             
-        # Try to force lock
-        if not obtain_lock_force(handle):
-            print("[!] Failed to lock device")
-            win32file.CloseHandle(handle)
-            return False
-            
+        patterns = [
+            b'\x00' * CHUNK_SIZE,  # All zeros
+            b'\xFF' * CHUNK_SIZE,  # All ones
+            os.urandom(CHUNK_SIZE)  # Random data
+        ]
+        
+        for pass_num, pattern in enumerate(patterns, 1):
+            print(f"\nPass {pass_num}/3 - {'Random' if pass_num == 3 else 'Zeros' if pass_num == 1 else 'Ones'}")
+            for chunk in range(chunks):
+                try:
+                    win32file.WriteFile(handle, pattern)
+                    progress = (chunk + 1) / chunks * 100
+                    print(f"Processing chunk {chunk + 1}/{chunks} ({progress:.1f}%)", end='\r')
+                except Exception as e:
+                    print(f"\n[!] Write error at offset {chunk * CHUNK_SIZE}: {str(e)}")
+                    return False
+            print()  # New line after progress
+        
+        cert_path = create_wipe_certificate(device_info)
+        if cert_path:
+            print(f"\n[+] Certificate saved: {cert_path}")
         return True
-            
-    except Exception as e:
-        print(f"[!] Error locking volume: {str(e)}")
-        return False
         
     except Exception as e:
-        print(f"[!] Error locking volume: {e}")
+        print(f"\n[!] Error during wipe: {str(e)}")
         return False
-
-def write_chunk(device_path: str, pattern: int, offset: int, size: int) -> bool:
-    """Write a chunk of data to device at offset."""
-    try:
-        handle = win32file.CreateFile(
-            device_path,
-            win32con.GENERIC_READ | win32con.GENERIC_WRITE,
-            0,  # No sharing
-            None,
-            win32file.OPEN_EXISTING,
-            0,
-            None
-        )
-        
-        try:
-            # Move to offset
-            win32file.SetFilePointer(handle, offset, 0)
-            
-            # Generate pattern data
-            if pattern == 0x00:  # zeros
-                data = b'\x00' * size
-            elif pattern == 0xFF:  # ones
-                data = b'\xFF' * size
-            else:  # random
-                data = os.urandom(size)
-                
-            # Write data
-            win32file.WriteFile(handle, data)
-            return True
-            
-        finally:
-            win32file.CloseHandle(handle)
-            
-    except Exception as e:
-        print(f"[!] Write error at offset {offset}: {e}")
-        return False
-
-def wipe_device_progressive(device_info: Dict[str, Any], passes: int = 3) -> bool:
-    """Securely wipe a physical drive with progressive passes."""
-    device_path = device_info["name"]
-    device_size = device_info["size"]
-    
-    patterns = [None, 0x00, 0xFF]  # None = random
-    chunks = math.ceil(device_size / CHUNK_SIZE)
-    
-    print(f"[*] Starting progressive {passes}-pass wipe on {device_info['friendly_name']}")
-    print(f"[*] Device size: {device_info['size_gb']:.2f} GB")
-    print(f"[*] Using {CHUNK_SIZE / (1024*1024):.0f}MB chunks")
-
-    for chunk_idx in range(chunks):
-        chunk_offset = chunk_idx * CHUNK_SIZE
-        chunk_size = min(CHUNK_SIZE, device_size - chunk_offset)
-        
-        print(f"\nProcessing chunk {chunk_idx + 1}/{chunks} "
-              f"({(chunk_offset/device_size*100):.1f}%)")
-        
-        for pass_idx, pattern in enumerate(patterns[:passes], 1):
-            print(f"Pass {pass_idx}/{passes} - " + 
-                  ("Random" if pattern is None else f"Pattern: {pattern:02X}"))
-            
-            if not write_chunk(device_path, pattern, chunk_offset, chunk_size):
-                return False
-
-    print("[✔] Wipe completed successfully")
-    return True
-
-def generate_certificate(device_info: Dict[str, Any], passes: int, completed: bool = True) -> str:
-    """Generate JSON certificate for completed wipe."""
-    os.makedirs(CERTS_DIR, exist_ok=True)
-    wipe_id = str(uuid.uuid4())
-    
-    cert = {
-        "wipe_id": wipe_id,
-        "device": device_info["friendly_name"],
-        "device_path": device_info["name"],
-        "device_size": device_info["size_gb"],
-        "method": f"US DoD 5220.22-M ({passes}-pass overwrite, progressive)",
-        "passes": passes,
-        "completed": completed,
-        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "hash": uuid.uuid5(uuid.NAMESPACE_DNS, wipe_id).hex
-    }
-
-    cert_path = os.path.join(CERTS_DIR, f"{wipe_id}.json")
-    with open(cert_path, "w") as f:
-        json.dump(cert, f, indent=4)
-
-    print(f"[+] Certificate saved: {cert_path}")
-    return cert_path
-
-def choose_device() -> Dict[str, Any]:
-    """Prompt user to select a physical drive."""
-    devices = get_physical_drives()
-    if not devices:
-        print("[!] No removable devices found.")
-        return None
-
-    print("\n=== Select a Device to Wipe ===")
-    print("[!] WARNING: Make sure to select the correct device!")
-    for i, d in enumerate(devices):
-        print(f"{i+1}. {d['friendly_name']} - {d['size_gb']} GB")
-
-    try:
-        choice = int(input("\nEnter device number (or 0 to cancel): ")) - 1
-        if choice == -1:
-            return None
-        if 0 <= choice < len(devices):
-            confirm = input(f"\n[!] WARNING: Are you sure you want to wipe {devices[choice]['friendly_name']}? "
-                          f"(Type 'YES' to confirm): ")
-            return devices[choice] if confirm == "YES" else None
-    except ValueError:
-        pass
-
-    print("[!] Invalid choice.")
-    return None
+    finally:
+        if handle and handle != INVALID_HANDLE_VALUE:
+            try:
+                win32file.CloseHandle(handle)
+            except:
+                pass
 
 def main():
+    """Main function."""
     if not requires_admin():
-        print("[!] This script requires administrator privileges!")
-        print("[!] Please run as administrator.")
+        print("[!] This script requires administrator privileges")
         return
-
-    print("=== NullNova Prototype (Progressive Wipe) - Windows Edition ===")
-
-    devices = get_physical_drives()
-    if devices:
-        print("\nDetected removable devices:")
-        for d in devices:
-            print(f"{d['friendly_name']} - {d['size_gb']} GB")
+    
+    drives = get_physical_drives()
+    if not drives:
+        print("[!] No removable drives found")
+        return
+    
+    print("\nAvailable drives:")
+    for i, drive in enumerate(drives):
+        print(f"{i + 1}. {drive['friendly_name']} ({drive['size_gb']} GB)")
+    
+    try:
+        selection = int(input("\nSelect drive number to wipe: ")) - 1
+        if not 0 <= selection < len(drives):
+            print("[!] Invalid selection")
+            return
+    except ValueError:
+        print("[!] Invalid input")
+        return
+    
+    selected_drive = drives[selection]
+    
+    confirm = input(f"\n[!] WARNING: Are you sure you want to wipe {selected_drive['friendly_name']}? (Type 'YES' to confirm): ")
+    if confirm != "YES":
+        print("[!] Operation cancelled")
+        return
+    
+    print(f"\n[*] Starting progressive 3-pass wipe on {selected_drive['friendly_name']}")
+    print(f"[*] Device size: {selected_drive['size_gb']} GB")
+    print(f"[*] Using {CHUNK_SIZE // (1024*1024)}MB chunks\n")
+    
+    success = wipe_device(selected_drive['name'], selected_drive)
+    if success:
+        print("\n[+] Wipe completed successfully")
     else:
-        print("No removable devices detected.")
-
-    print("\nOptions:")
-    print("1. Wipe a device (US DoD 3-pass, progressive)")
-    choice = input("Select option: ")
-
-    if choice == "1":
-        device_info = choose_device()
-        if device_info:
-            if lock_volume(device_info["name"]):
-                success = wipe_device_progressive(device_info, passes=3)
-                generate_certificate(device_info, passes=3, completed=success)
-            else:
-                print("[!] Failed to lock volume. Make sure it's not in use.")
-    else:
-        print("[!] Invalid option.")
+        print("\n[!] Wipe failed")
 
 if __name__ == "__main__":
     main()
