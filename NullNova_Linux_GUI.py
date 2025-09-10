@@ -4,6 +4,7 @@ import json
 import math
 import uuid
 import datetime
+import time
 import subprocess
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
@@ -207,33 +208,39 @@ class NullNovaGUI:
     def write_pattern(self, device_path, pattern, offset, size):
         """Write a specific pattern to device."""
         try:
+            pattern_name = "zeros" if pattern == 0x00 else "ones" if pattern == 0xFF else "random"
+            print(f"[DEBUG] Writing {pattern_name} pattern at offset {offset}")
+
             if pattern == 0x00:  # All zeros
                 cmd = f'dd if=/dev/zero of={device_path} bs={size} count=1 seek={offset//size} conv=notrunc status=progress 2>&1\n'
-                self.elevated_process.stdin.write(cmd)
             elif pattern == 0xFF:  # All ones
-                # Write ones using a simpler approach with a single dd command
-                cmd = (f'tr "\\000" "\\377" < /dev/zero | dd of={device_path} bs={size} count=1 '
-                      f'seek={offset//size} conv=notrunc status=progress 2>&1\n')
-                self.elevated_process.stdin.write(cmd)
+                # First create pattern file with exact size
+                cmd = (
+                    f'dd if=/dev/zero bs={size} count=1 2>/dev/null | tr "\\000" "\\377" > /dev/shm/ones && '
+                    f'dd if=/dev/shm/ones of={device_path} bs={size} count=1 seek={offset//size} conv=notrunc status=progress 2>&1 && '
+                    f'rm -f /dev/shm/ones\n'
+                )
             else:  # Random data
                 cmd = f'dd if=/dev/urandom of={device_path} bs={size} count=1 seek={offset//size} conv=notrunc status=progress 2>&1\n'
-                self.elevated_process.stdin.write(cmd)
-        
+
+            self.elevated_process.stdin.write(cmd)
             self.elevated_process.stdin.flush()
             print(f"[DEBUG] Executing: {cmd.strip()}")
-            
+
             success = False
-            timeout = 0
-            while timeout < 30:  # 30 second timeout
+            bytes_written = 0
+            start_time = time.time()
+            
+            while (time.time() - start_time) < 60:  # 60 second timeout
                 output = self.elevated_process.stdout.readline()
                 if not output:
-                    timeout += 1
+                    time.sleep(0.1)
                     continue
-                
+                    
                 output = output.strip()
                 print(f"[DEBUG] Output: {output}")
-                
-                if "bytes" in output:
+
+                if "bytes" in output and "copied" in output:
                     try:
                         bytes_written = int(output.split()[0])
                         if bytes_written >= size:
@@ -241,19 +248,22 @@ class NullNovaGUI:
                             break
                     except Exception as e:
                         print(f"[DEBUG] Parse error: {e}")
-                elif "records" in output and pattern == 0xFF:
+                elif all(x in output for x in ["records", "in", "out"]):
+                    # Check for successful dd completion message
                     success = True
                     break
-                    
+
             if not success:
-                print("[ERROR] Write operation timed out or failed")
+                print(f"[ERROR] Write operation failed. Bytes written: {bytes_written}/{size}")
                 return False
-                
-            # Ensure operation completed
+
+            # Force sync
             self.elevated_process.stdin.write("sync\n")
             self.elevated_process.stdin.flush()
+            time.sleep(0.5)  # Short wait for sync
+            
             return True
-                
+
         except Exception as e:
             print(f"[ERROR] Write pattern failed: {e}")
             return False
