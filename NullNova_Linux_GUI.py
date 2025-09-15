@@ -461,14 +461,22 @@ class NullNovaGUI:
         try:
             success = self.wipe_device(device_info)
             if success:
-                cert_path = self.generate_certificate(device_info, passes=3)
-                messagebox.showinfo(
-                    "Success",
-                    f"Wipe completed successfully!\nCertificate saved to: {cert_path}"
-                )
+                try:
+                    cert_path = self.generate_certificate(device_info, passes=3)
+                    messagebox.showinfo(
+                        "Success",
+                        f"Wipe completed successfully!\nCertificate saved to: {cert_path}"
+                    )
+                except Exception as e:
+                    print(f"[ERROR] Failed to generate certificate: {str(e)}")
+                    messagebox.showwarning(
+                        "Warning",
+                        "Wipe completed but failed to generate certificate"
+                    )
             else:
                 messagebox.showerror("Error", "Wipe process failed!")
         except Exception as e:
+            print(f"[ERROR] Critical error in wipe thread: {str(e)}")
             messagebox.showerror("Error", f"An error occurred: {str(e)}")
         finally:
             self.enable_controls()
