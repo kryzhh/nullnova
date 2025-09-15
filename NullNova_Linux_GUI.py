@@ -212,16 +212,17 @@ class NullNovaGUI:
             print(f"[DEBUG] Writing {pattern_name} pattern at offset {offset}")
 
             if pattern == 0x00:  # All zeros
-                cmd = f'dd if=/dev/zero of={device_path} bs={size} count=1 seek={offset//size} conv=notrunc status=progress 2>&1\n'
+                cmd = f'dd if=/dev/zero of={device_path} bs={size} count=1 seek={offset//size} conv=notrunc,sync status=progress oflag=direct 2>&1\n'
             elif pattern == 0xFF:  # All ones
-                # First create pattern file with exact size
+                # Write ones pattern without redirecting to /dev/null
                 cmd = (
-                    f'dd if=/dev/zero bs={size} count=1 2>/dev/null | tr "\\000" "\\377" > /dev/shm/ones && '
-                    f'dd if=/dev/shm/ones of={device_path} bs={size} count=1 seek={offset//size} conv=notrunc status=progress 2>&1 && '
+                    f'dd if=/dev/zero bs={size} count=1 | tr "\\000" "\\377" > /dev/shm/ones && '
+                    f'dd if=/dev/shm/ones of={device_path} bs={size} count=1 seek={offset//size} '
+                    f'conv=notrunc,sync status=progress oflag=direct 2>&1 && '
                     f'rm -f /dev/shm/ones\n'
                 )
             else:  # Random data
-                cmd = f'dd if=/dev/urandom of={device_path} bs={size} count=1 seek={offset//size} conv=notrunc status=progress 2>&1\n'
+                cmd = f'dd if=/dev/urandom of={device_path} bs={size} count=1 seek={offset//size} conv=notrunc,sync status=progress oflag=direct 2>&1\n'
 
             self.elevated_process.stdin.write(cmd)
             self.elevated_process.stdin.flush()
