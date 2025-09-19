@@ -212,16 +212,17 @@ class NullNovaGUI:
             print(f"[DEBUG] Writing {pattern_name} pattern at offset {offset}")
 
             if pattern == 0x00:  # All zeros
-                cmd = f'dd if=/dev/zero of={device_path} bs={size} count=1 seek={offset//size} conv=notrunc status=progress 2>&1\n'
+                cmd = f'dd if=/dev/zero of={device_path} bs={size} count=1 seek={offset//size} conv=notrunc,sync status=progress oflag=direct 2>&1\n'
             elif pattern == 0xFF:  # All ones
-                # First create pattern file with exact size
+                # Write ones pattern without redirecting to /dev/null
                 cmd = (
-                    f'dd if=/dev/zero bs={size} count=1 2>/dev/null | tr "\\000" "\\377" > /dev/shm/ones && '
-                    f'dd if=/dev/shm/ones of={device_path} bs={size} count=1 seek={offset//size} conv=notrunc status=progress 2>&1 && '
+                    f'dd if=/dev/zero bs={size} count=1 | tr "\\000" "\\377" > /dev/shm/ones && '
+                    f'dd if=/dev/shm/ones of={device_path} bs={size} count=1 seek={offset//size} '
+                    f'conv=notrunc,sync status=progress oflag=direct 2>&1 && '
                     f'rm -f /dev/shm/ones\n'
                 )
             else:  # Random data
-                cmd = f'dd if=/dev/urandom of={device_path} bs={size} count=1 seek={offset//size} conv=notrunc status=progress 2>&1\n'
+                cmd = f'dd if=/dev/urandom of={device_path} bs={size} count=1 seek={offset//size} conv=notrunc,sync status=progress oflag=direct 2>&1\n'
 
             self.elevated_process.stdin.write(cmd)
             self.elevated_process.stdin.flush()
@@ -461,14 +462,22 @@ class NullNovaGUI:
         try:
             success = self.wipe_device(device_info)
             if success:
-                cert_path = self.generate_certificate(device_info, passes=3)
-                messagebox.showinfo(
-                    "Success",
-                    f"Wipe completed successfully!\nCertificate saved to: {cert_path}"
-                )
+                try:
+                    cert_path = self.generate_certificate(device_info, passes=3)
+                    messagebox.showinfo(
+                        "Success",
+                        f"Wipe completed successfully!\nCertificate saved to: {cert_path}"
+                    )
+                except Exception as e:
+                    print(f"[ERROR] Failed to generate certificate: {str(e)}")
+                    messagebox.showwarning(
+                        "Warning",
+                        "Wipe completed but failed to generate certificate"
+                    )
             else:
                 messagebox.showerror("Error", "Wipe process failed!")
         except Exception as e:
+            print(f"[ERROR] Critical error in wipe thread: {str(e)}")
             messagebox.showerror("Error", f"An error occurred: {str(e)}")
         finally:
             self.enable_controls()
