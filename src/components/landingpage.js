@@ -1,9 +1,14 @@
 import React, { useState, useEffect } from "react";
-import { SignedIn, SignedOut, SignInButton, UserButton } from '@clerk/clerk-react';
+import { RecaptchaVerifier, signInWithPhoneNumber } from "firebase/auth";
+import { auth } from "../firebase";
+
+
 /* ---------------------------
    Simple inline SVG icons
    (keeps this file dependency-free)
    --------------------------- */
+   //import { auth } from "../firebase";
+   
 const IconDownload = ({ className = "" }) => (
   <svg viewBox="0 0 24 24" className={className} aria-hidden>
     <path
@@ -76,7 +81,65 @@ const IconLock = ({ className = "" }) => (
    --------------------------- */
 const NullNovaWebsite = () => {
   const [activeTab, setActiveTab] = useState("desktop");
+  
+  const [phoneNumber, setPhoneNumber] = useState("");
+  const [otp, setOtp] = useState("");
 
+  // Send OTP handler
+  const handleSendOTP = (e) => {
+    e.preventDefault();
+    // Set up reCAPTCHA verifier (visible widget)
+    if (!window.recaptchaVerifier) {
+      window.recaptchaVerifier = new RecaptchaVerifier(
+        'recaptcha-container',
+        {
+          'size': 'normal',
+          'callback': (response) => { /* ... */ },
+          'expired-callback': () => { /* ... */ }
+        },
+        auth
+      );
+    }
+    window.recaptchaVerifier.render().then(function(widgetId) {
+      window.recaptchaWidgetId = widgetId;
+    });
+    const appVerifier = window.recaptchaVerifier;
+    signInWithPhoneNumber(auth, phoneNumber, appVerifier)
+      .then((confirmationResult) => {
+        window.confirmationResult = confirmationResult;
+        alert("OTP sent!");
+      })
+      .catch((error) => {
+        // Reset the reCAPTCHA if error
+        if (window.recaptchaWidgetId) {
+          window.grecaptcha && window.grecaptcha.reset(window.recaptchaWidgetId);
+        } else if (window.recaptchaVerifier) {
+          window.recaptchaVerifier.render().then(function(widgetId) {
+            window.grecaptcha && window.grecaptcha.reset(widgetId);
+          });
+        }
+        console.error("Error sending OTP:", error);
+      });
+  };
+
+  // Verify OTP handler
+  const handleVerifyOTP = (e) => {
+    e.preventDefault();
+    const confirmationResult = window.confirmationResult;
+    if (!confirmationResult) {
+      alert("Please request an OTP first.");
+      return;
+    }
+    confirmationResult.confirm(otp)
+      .then((result) => {
+        // User signed in successfully.
+        alert("Phone number verified!");
+      })
+      .catch((error) => {
+        alert("Invalid OTP. Please try again.");
+        console.error("Error verifying OTP:", error);
+      });
+  };
   useEffect(() => {
     document.title = "NullNova";
   }, []);
@@ -346,14 +409,7 @@ const NullNovaWebsite = () => {
           <button className="nn-cta" aria-label="Get started">
             Get Started
           </button>
-         <div>
-                <SignedOut>
-                  <SignInButton className="nn-cta" />
-                </SignedOut>
-                <SignedIn>
-                  <UserButton appearance={{ elements: { userButtonBox: 'nn-cta' } }} />
-                </SignedIn>
-         </div> 
+        
         </header>
 
         {/* HERO */}
@@ -362,6 +418,45 @@ const NullNovaWebsite = () => {
             className="hero"
             role="region"
             aria-labelledby="hero-heading">
+
+            {/* Phone OTP Login */}
+            <form onSubmit={handleSendOTP} style={{ margin: '24px auto', maxWidth: 320 }}>
+              <input
+                type="tel"
+                value={phoneNumber}
+                onChange={e => setPhoneNumber(e.target.value)}
+                placeholder="Enter phone number"
+                required
+                style={{
+                  width: '100%',
+                  padding: '10px',
+                  borderRadius: '8px',
+                  border: '1px solid #ccc',
+                  marginBottom: '10px',
+                  fontSize: '1rem'
+                }}
+              />
+              <button type="submit" className="nn-cta" style={{ width: '100%' }}>Send OTP</button>
+              <div id="recaptcha-container"></div>
+            </form>
+            <form onSubmit={handleVerifyOTP} style={{ margin: '12px auto', maxWidth: 320 }}>
+              <input
+                type="text"
+                value={otp}
+                onChange={e => setOtp(e.target.value)}
+                placeholder="Enter OTP"
+                required
+                style={{
+                  width: '100%',
+                  padding: '10px',
+                  borderRadius: '8px',
+                  border: '1px solid #ccc',
+                  marginBottom: '10px',
+                  fontSize: '1rem'
+                }}
+              />
+              <button type="submit" className="nn-cta" style={{ width: '100%' }}>Verify OTP</button>
+            </form>
             <h1 id="hero-heading" className="hero-title">
               {gradientText(
                 "Complete Data",
