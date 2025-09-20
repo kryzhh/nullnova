@@ -1,8 +1,6 @@
 import React, { useState, useEffect } from "react";
-import { RecaptchaVerifier, signInWithPhoneNumber } from "firebase/auth";
-import { auth } from "../firebase";
 
-
+import { SignedIn, SignedOut, SignInButton, UserButton } from '@clerk/clerk-react';
 /* ---------------------------
    Simple inline SVG icons
    (keeps this file dependency-free)
@@ -75,71 +73,36 @@ const IconLock = ({ className = "" }) => (
     />
   </svg>
 );
+const IconX = ({ className = "" }) => (
+  <svg viewBox="0 0 24 24" className={className} aria-hidden>
+    <path fill="currentColor" d="M18.3 5.71L12 12.01l-6.3-6.3-1.41 1.42L10.59 13.5l-6.3 6.3 1.42 1.41L12 14.91l6.3 6.3 1.41-1.42L13.41 13.5l6.3-6.3z" />
+  </svg>
+);
+const IconArrowLeft = ({ className = "" }) => (
+  <svg viewBox="0 0 24 24" className={className} aria-hidden>
+    <path fill="currentColor" d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z" />
+  </svg>
+);
+const IconDesktop = ({ className = "" }) => (
+  <svg viewBox="0 0 24 24" className={className} aria-hidden>
+    <path fill="currentColor" d="M21 2H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h7l-2 3v1h8v-1l-2-3h7c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 12H3V4h18v10z" />
+  </svg>
+);
+const IconDisc = ({ className = "" }) => (
+  <svg viewBox="0 0 24 24" className={className} aria-hidden>
+    <path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 14.5c-2.49 0-4.5-2.01-4.5-4.5S9.51 7.5 12 7.5s4.5 2.01 4.5 4.5-2.01 4.5-4.5 4.5zm0-5.5c-.55 0-1 .45-1 1s.45 1 1 1 1-.45 1-1-.45-1-1-1z" />
+  </svg>
+);
 
 /* ---------------------------
    Main component
    --------------------------- */
 const NullNovaWebsite = () => {
   const [activeTab, setActiveTab] = useState("desktop");
+  const [showModal, setShowModal] = useState(false);
+  const [modalView, setModalView] = useState("choice"); // "choice", "app", "iso"
   
-  const [phoneNumber, setPhoneNumber] = useState("");
-  const [otp, setOtp] = useState("");
 
-  // Send OTP handler
-  const handleSendOTP = (e) => {
-    e.preventDefault();
-    // Set up reCAPTCHA verifier (visible widget)
-    if (!window.recaptchaVerifier) {
-      window.recaptchaVerifier = new RecaptchaVerifier(
-        'recaptcha-container',
-        {
-          'size': 'normal',
-          'callback': (response) => { /* ... */ },
-          'expired-callback': () => { /* ... */ }
-        },
-        auth
-      );
-    }
-    window.recaptchaVerifier.render().then(function(widgetId) {
-      window.recaptchaWidgetId = widgetId;
-    });
-    const appVerifier = window.recaptchaVerifier;
-    signInWithPhoneNumber(auth, phoneNumber, appVerifier)
-      .then((confirmationResult) => {
-        window.confirmationResult = confirmationResult;
-        alert("OTP sent!");
-      })
-      .catch((error) => {
-        // Reset the reCAPTCHA if error
-        if (window.recaptchaWidgetId) {
-          window.grecaptcha && window.grecaptcha.reset(window.recaptchaWidgetId);
-        } else if (window.recaptchaVerifier) {
-          window.recaptchaVerifier.render().then(function(widgetId) {
-            window.grecaptcha && window.grecaptcha.reset(widgetId);
-          });
-        }
-        console.error("Error sending OTP:", error);
-      });
-  };
-
-  // Verify OTP handler
-  const handleVerifyOTP = (e) => {
-    e.preventDefault();
-    const confirmationResult = window.confirmationResult;
-    if (!confirmationResult) {
-      alert("Please request an OTP first.");
-      return;
-    }
-    confirmationResult.confirm(otp)
-      .then((result) => {
-        // User signed in successfully.
-        alert("Phone number verified!");
-      })
-      .catch((error) => {
-        alert("Invalid OTP. Please try again.");
-        console.error("Error verifying OTP:", error);
-      });
-  };
   useEffect(() => {
     document.title = "NullNova";
   }, []);
@@ -249,6 +212,166 @@ const NullNovaWebsite = () => {
       {text}
     </span>
   );
+
+  const openModal = () => {
+    setShowModal(true);
+    setModalView("choice");
+  };
+
+  const closeModal = () => {
+    setShowModal(false);
+    setModalView("choice");
+  };
+
+  const goToApp = () => setModalView("app");
+  const goToIso = () => setModalView("iso");
+  const goBack = () => setModalView("choice");
+
+  const renderModalContent = () => {
+    if (modalView === "choice") {
+      return (
+        <>
+          <div className="modal-header">
+            <h2 className="modal-title">Choose Your Download</h2>
+            <button className="modal-close" onClick={closeModal}>
+              <IconX style={{ width: 18, height: 18 }} />
+            </button>
+          </div>
+          <div className="modal-body">
+            <p style={{ color: "var(--muted)", marginBottom: 20 }}>
+              Select the type of installation that works best for your needs.
+            </p>
+            <div className="modal-grid">
+              <div className="modal-option" onClick={goToApp}>
+                <div className="modal-option-icon">
+                  <IconDesktop className="icon" />
+                </div>
+                <h3>Desktop App</h3>
+                <p>Easy installation on Windows, Mac, or Linux</p>
+              </div>
+              <div className="modal-option" onClick={goToIso}>
+                <div className="modal-option-icon">
+                  <IconDisc className="icon" />
+                </div>
+                <h3>Bootable ISO</h3>
+                <p>Boot from USB/CD for complete system wiping</p>
+              </div>
+            </div>
+          </div>
+        </>
+      );
+    }
+
+    if (modalView === "app") {
+      return (
+        <>
+          <div className="modal-header">
+            <h2 className="modal-title">Desktop App Installation</h2>
+            <button className="modal-close" onClick={closeModal}>
+              <IconX style={{ width: 18, height: 18 }} />
+            </button>
+          </div>
+          <div className="modal-body">
+            <button className="modal-back" onClick={goBack}>
+              <IconArrowLeft style={{ width: 16, height: 16 }} />
+              Back to options
+            </button>
+            <p style={{ color: "var(--muted)" }}>
+              Choose your operating system and follow the installation steps:
+            </p>
+            
+            <div className="os-grid">
+              <div className="os-section">
+                <h3 className="os-title" style={{ color: "var(--cyan)" }}>Windows</h3>
+                <ol className="os-steps-list">
+                  <li className="os-step">
+                    <span className="os-step-number">1</span>
+                    <span>Install Python on your system (<a href="https://python.org/downloads" style={{ color: "var(--cyan)" }}>download Python</a>)</span>
+                  </li>
+                  <li className="os-step">
+                    <span className="os-step-number">2</span>
+                    <span><b>Download</b> the files</span>
+                  </li>
+                  <li className="os-step">
+                    <span className="os-step-number">3</span>
+                    <span>Run <b>setup.bat</b></span>
+                  </li>
+                  <li className="os-step">
+                    <span className="os-step-number">4</span>
+                    <span>Right click NULLNOVA_WINDOWS.py and run as <b>admin</b></span>
+                  </li>
+                </ol>
+              </div>
+
+              <div className="os-divider"></div>
+
+              <div className="os-section">
+                <h3 className="os-title" style={{ color: "var(--fuchsia)" }}>Linux</h3>
+                <ol className="os-steps-list">
+                  <li className="os-step">
+                    <span className="os-step-number">1</span>
+                    <span><b>Download</b> the files</span>
+                  </li>
+                  <li className="os-step">
+                    <span className="os-step-number">2</span>
+                    <span>Run <b>setup.sh</b></span>
+                  </li>
+                  <li className="os-step">
+                    <span className="os-step-number">3</span>
+                    <span>Open terminal and run <code style={{ background: "var(--glass)", padding: "2px 6px", borderRadius: "4px" }}>sudo NULLNOVA_LINUX.py</code></span>
+                  </li>
+                </ol>
+              </div>
+            </div>
+
+            <button className="download-btn">Download Desktop App</button>
+          </div>
+        </>
+      );
+    }
+
+    if (modalView === "iso") {
+      return (
+        <>
+          <div className="modal-header">
+            <h2 className="modal-title">Bootable ISO Setup</h2>
+            <button className="modal-close" onClick={closeModal}>
+              <IconX style={{ width: 18, height: 18 }} />
+            </button>
+          </div>
+          <div className="modal-body">
+            <button className="modal-back" onClick={goBack}>
+              <IconArrowLeft style={{ width: 16, height: 16 }} />
+              Back to options
+            </button>
+            <p style={{ color: "var(--muted)" }}>
+              Create a bootable drive for complete system wiping:
+            </p>
+            
+            <ol className="iso-steps-list">
+              <li className="iso-step">
+                <span className="iso-step-number">1</span>
+                <span>Download the <b>NullNova ISO file</b></span>
+              </li>
+              <li className="iso-step">
+                <span className="iso-step-number">2</span>
+                <span>Use <b>Rufus</b> or similar tool to create bootable USB</span>
+              </li>
+              <li className="iso-step">
+                <span className="iso-step-number">3</span>
+                <span>Boot target computer from <b>USB/CD</b></span>
+              </li>
+              <li className="iso-step">
+                <span className="iso-step-number">4</span>
+                <span>Follow on-screen instructions for <b>complete wipe</b></span>
+              </li>
+            </ol>
+            <button className="download-btn">Download ISO File</button>
+          </div>
+        </>
+      );
+    }
+  };
 
   return (
     <div className="nn-main">
@@ -368,6 +491,86 @@ const NullNovaWebsite = () => {
         /* footer */
         .nn-footer { text-align:center; padding:28px 12px 80px; color:var(--muted); font-size:0.95rem; }
 
+        /* modal */
+        .modal-overlay { position:fixed; inset:0; z-index:1000; background: rgba(2,4,10,0.85); backdrop-filter: blur(8px); display:flex; align-items:center; justify-content:center; padding:20px; }
+  .modal-content { background: var(--bg); border:1px solid var(--glass-border); border-radius:16px; max-width:650px; width:100%; max-height:90vh; overflow-y:auto; position:relative; }
+        .modal-header { padding:20px 20px 0; display:flex; justify-content:space-between; align-items:center; }
+        .modal-title { font-size:1.3rem; font-weight:700; margin:0; }
+        .modal-close { background:none; border:none; color:var(--muted); cursor:pointer; width:32px; height:32px; display:flex; align-items:center; justify-content:center; border-radius:8px; }
+        .modal-close:hover { background:rgba(255,255,255,0.06); color:#fff; }
+        .modal-body { padding:20px; }
+        .modal-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:12px; }
+        .modal-option { padding:20px; border-radius:12px; background:var(--glass); border:1px solid var(--glass-border); cursor:pointer; text-align:center; transition: all 0.25s ease; }
+        .modal-option:hover { transform:translateY(-2px); border-color:var(--cyan); background:rgba(6,182,212,0.05); }
+        .modal-option-icon { width:48px; height:48px; margin:0 auto 12px; color:var(--cyan); }
+        .modal-option h3 { margin:0 0 8px; font-weight:700; }
+        .modal-option p { color:var(--muted); margin:0; font-size:0.9rem; }
+        .modal-back { display:flex; align-items:center; gap:8px; background:none; border:none; color:var(--muted); cursor:pointer; padding:8px; margin-bottom:16px; border-radius:8px; }
+        .modal-back:hover { color:#fff; background:rgba(255,255,255,0.06); }
+        .steps-list { list-style:none; padding:0; margin:16px 0; }
+        .step { padding:12px 0; border-bottom:1px solid var(--glass-border); }
+        .step:last-child { border-bottom:none; }
+        .step-number { display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; border-radius:50%; background:linear-gradient(90deg,var(--cyan),var(--fuchsia)); color:#021018; font-weight:700; font-size:0.85rem; margin-right:12px; }
+        .iso-steps-list {
+          list-style: none;
+          padding: 0;
+          margin: 24px 0 24px 0;
+        }
+        .iso-step {
+          display: flex;
+          align-items: flex-start;
+          gap: 16px;
+          padding: 18px 0 18px 0;
+          border-bottom: 1px solid var(--glass-border);
+          font-size: 1.08rem;
+        }
+        .iso-step:last-child {
+          border-bottom: none;
+        }
+        .iso-step-number, .os-step-number {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          min-width: 32px;
+          min-height: 32px;
+          width: 32px;
+          height: 32px;
+          border-radius: 50%;
+          background: linear-gradient(90deg, var(--cyan), var(--fuchsia));
+          color: #021018;
+          font-weight: 800;
+          font-size: 1.15rem;
+          margin-right: 12px;
+          box-shadow: 0 2px 8px rgba(6,182,212,0.10);
+          flex-shrink: 0;
+        }
+        .iso-step, .os-step {
+          display: flex;
+          align-items: center;
+        }
+        .download-btn { width:100%; padding:12px; border-radius:10px; background:linear-gradient(90deg,var(--cyan),var(--fuchsia)); color:#021018; border:none; font-weight:700; cursor:pointer; margin-top:16px; }
+        .os-grid { display:grid; grid-template-columns:1fr 1px 1fr; gap:20px; margin-top:20px; }
+        .os-divider { background:var(--glass-border); width:1px; }
+        .os-section { padding:0 8px; }
+        .os-title { margin:0 0 16px 0; font-size:1.1rem; text-align:center; }
+        .os-steps-list {
+          list-style: none;
+          padding: 0;
+          margin: 18px 0 18px 0;
+        }
+        .os-step {
+          display: flex;
+          align-items: flex-start;
+          gap: 14px;
+          padding: 14px 0 14px 0;
+          border-bottom: 1px solid var(--glass-border);
+          font-size: 1.04rem;
+        }
+        .os-step:last-child {
+          border-bottom: none;
+        }
+
+
         /* responsive */
         @media(min-width:700px){
           .features-grid { grid-template-columns:repeat(3,1fr); }
@@ -409,7 +612,14 @@ const NullNovaWebsite = () => {
           <button className="nn-cta" aria-label="Get started">
             Get Started
           </button>
-        
+         <div>
+                <SignedOut>
+                  <SignInButton className="nn-cta" />
+                </SignedOut>
+                <SignedIn>
+                  <UserButton appearance={{ elements: { userButtonBox: 'nn-cta' } }} />
+                </SignedIn>
+         </div> 
         </header>
 
         {/* HERO */}
@@ -419,44 +629,7 @@ const NullNovaWebsite = () => {
             role="region"
             aria-labelledby="hero-heading">
 
-            {/* Phone OTP Login */}
-            <form onSubmit={handleSendOTP} style={{ margin: '24px auto', maxWidth: 320 }}>
-              <input
-                type="tel"
-                value={phoneNumber}
-                onChange={e => setPhoneNumber(e.target.value)}
-                placeholder="Enter phone number"
-                required
-                style={{
-                  width: '100%',
-                  padding: '10px',
-                  borderRadius: '8px',
-                  border: '1px solid #ccc',
-                  marginBottom: '10px',
-                  fontSize: '1rem'
-                }}
-              />
-              <button type="submit" className="nn-cta" style={{ width: '100%' }}>Send OTP</button>
-              <div id="recaptcha-container"></div>
-            </form>
-            <form onSubmit={handleVerifyOTP} style={{ margin: '12px auto', maxWidth: 320 }}>
-              <input
-                type="text"
-                value={otp}
-                onChange={e => setOtp(e.target.value)}
-                placeholder="Enter OTP"
-                required
-                style={{
-                  width: '100%',
-                  padding: '10px',
-                  borderRadius: '8px',
-                  border: '1px solid #ccc',
-                  marginBottom: '10px',
-                  fontSize: '1rem'
-                }}
-              />
-              <button type="submit" className="nn-cta" style={{ width: '100%' }}>Verify OTP</button>
-            </form>
+
             <h1 id="hero-heading" className="hero-title">
               {gradientText(
                 "Complete Data",
@@ -479,7 +652,7 @@ const NullNovaWebsite = () => {
               className="hero-buttons"
               role="region"
               aria-label="Primary actions">
-              <button className="btn btn-primary" title="Download NullNova">
+              <button className="btn btn-primary" onClick={openModal} title="Download NullNova">
                 <IconDownload
                   className="icon-small"
                   style={{ width: 16, height: 16 }}
@@ -679,6 +852,15 @@ const NullNovaWebsite = () => {
           <div>© {new Date().getFullYear()} NullNova. All rights reserved.</div>
         </footer>
       </div>
+
+      {/* MODAL */}
+      {showModal && (
+        <div className="modal-overlay" onClick={closeModal}>
+          <div className="modal-content" onClick={e => e.stopPropagation()}>
+            {renderModalContent()}
+          </div>
+        </div>
+      )}
     </div>
   );
 };
