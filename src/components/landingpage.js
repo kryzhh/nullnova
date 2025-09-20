@@ -1,12 +1,17 @@
 import React, { useState, useEffect } from "react";
 
-import { SignedIn, SignedOut, SignInButton, UserButton } from '@clerk/clerk-react';
+import {
+  SignedIn,
+  SignedOut,
+  SignInButton,
+  UserButton,
+} from "@clerk/clerk-react";
 /* ---------------------------
    Simple inline SVG icons
    (keeps this file dependency-free)
    --------------------------- */
-   //import { auth } from "../firebase";
-   
+//import { auth } from "../firebase";
+
 const IconDownload = ({ className = "" }) => (
   <svg viewBox="0 0 24 24" className={className} aria-hidden>
     <path
@@ -75,22 +80,34 @@ const IconLock = ({ className = "" }) => (
 );
 const IconX = ({ className = "" }) => (
   <svg viewBox="0 0 24 24" className={className} aria-hidden>
-    <path fill="currentColor" d="M18.3 5.71L12 12.01l-6.3-6.3-1.41 1.42L10.59 13.5l-6.3 6.3 1.42 1.41L12 14.91l6.3 6.3 1.41-1.42L13.41 13.5l6.3-6.3z" />
+    <path
+      fill="currentColor"
+      d="M18.3 5.71L12 12.01l-6.3-6.3-1.41 1.42L10.59 13.5l-6.3 6.3 1.42 1.41L12 14.91l6.3 6.3 1.41-1.42L13.41 13.5l6.3-6.3z"
+    />
   </svg>
 );
 const IconArrowLeft = ({ className = "" }) => (
   <svg viewBox="0 0 24 24" className={className} aria-hidden>
-    <path fill="currentColor" d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z" />
+    <path
+      fill="currentColor"
+      d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"
+    />
   </svg>
 );
 const IconDesktop = ({ className = "" }) => (
   <svg viewBox="0 0 24 24" className={className} aria-hidden>
-    <path fill="currentColor" d="M21 2H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h7l-2 3v1h8v-1l-2-3h7c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 12H3V4h18v10z" />
+    <path
+      fill="currentColor"
+      d="M21 2H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h7l-2 3v1h8v-1l-2-3h7c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 12H3V4h18v10z"
+    />
   </svg>
 );
 const IconDisc = ({ className = "" }) => (
   <svg viewBox="0 0 24 24" className={className} aria-hidden>
-    <path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 14.5c-2.49 0-4.5-2.01-4.5-4.5S9.51 7.5 12 7.5s4.5 2.01 4.5 4.5-2.01 4.5-4.5 4.5zm0-5.5c-.55 0-1 .45-1 1s.45 1 1 1 1-.45 1-1-.45-1-1-1z" />
+    <path
+      fill="currentColor"
+      d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 14.5c-2.49 0-4.5-2.01-4.5-4.5S9.51 7.5 12 7.5s4.5 2.01 4.5 4.5-2.01 4.5-4.5 4.5zm0-5.5c-.55 0-1 .45-1 1s.45 1 1 1 1-.45 1-1-.45-1-1-1z"
+    />
   </svg>
 );
 
@@ -101,7 +118,6 @@ const NullNovaWebsite = () => {
   const [activeTab, setActiveTab] = useState("desktop");
   const [showModal, setShowModal] = useState(false);
   const [modalView, setModalView] = useState("choice"); // "choice", "app", "iso"
-  
 
   useEffect(() => {
     document.title = "NullNova";
@@ -279,26 +295,42 @@ const NullNovaWebsite = () => {
             <p style={{ color: "var(--muted)" }}>
               Choose your operating system and follow the installation steps:
             </p>
-            
+
             <div className="os-grid">
               <div className="os-section">
-                <h3 className="os-title" style={{ color: "var(--cyan)" }}>Windows</h3>
+                <h3 className="os-title" style={{ color: "var(--cyan)" }}>
+                  Windows
+                </h3>
                 <ol className="os-steps-list">
                   <li className="os-step">
                     <span className="os-step-number">1</span>
-                    <span>Install Python on your system (<a href="https://python.org/downloads" style={{ color: "var(--cyan)" }}>download Python</a>)</span>
+                    <span>
+                      Install Python on your system (
+                      <a
+                        href="https://python.org/downloads"
+                        style={{ color: "var(--cyan)" }}>
+                        download Python
+                      </a>
+                      )
+                    </span>
                   </li>
                   <li className="os-step">
                     <span className="os-step-number">2</span>
-                    <span><b>Download</b> the files</span>
+                    <span>
+                      <b>Download</b> the files
+                    </span>
                   </li>
                   <li className="os-step">
                     <span className="os-step-number">3</span>
-                    <span>Run <b>setup.bat</b></span>
+                    <span>
+                      Run <b>setup.bat</b>
+                    </span>
                   </li>
                   <li className="os-step">
                     <span className="os-step-number">4</span>
-                    <span>Right click NULLNOVA_WINDOWS.py and run as <b>admin</b></span>
+                    <span>
+                      Right click NULLNOVA_WINDOWS.py and run as <b>admin</b>
+                    </span>
                   </li>
                 </ol>
               </div>
@@ -306,19 +338,35 @@ const NullNovaWebsite = () => {
               <div className="os-divider"></div>
 
               <div className="os-section">
-                <h3 className="os-title" style={{ color: "var(--fuchsia)" }}>Linux</h3>
+                <h3 className="os-title" style={{ color: "var(--fuchsia)" }}>
+                  Linux
+                </h3>
                 <ol className="os-steps-list">
                   <li className="os-step">
                     <span className="os-step-number">1</span>
-                    <span><b>Download</b> the files</span>
+                    <span>
+                      <b>Download</b> the files
+                    </span>
                   </li>
                   <li className="os-step">
                     <span className="os-step-number">2</span>
-                    <span>Run <b>setup.sh</b></span>
+                    <span>
+                      Run <b>setup.sh</b>
+                    </span>
                   </li>
                   <li className="os-step">
                     <span className="os-step-number">3</span>
-                    <span>Open terminal and run <code style={{ background: "var(--glass)", padding: "2px 6px", borderRadius: "4px" }}>sudo NULLNOVA_LINUX.py</code></span>
+                    <span>
+                      Open terminal and run{" "}
+                      <code
+                        style={{
+                          background: "var(--glass)",
+                          padding: "2px 6px",
+                          borderRadius: "4px",
+                        }}>
+                        sudo NULLNOVA_LINUX.py
+                      </code>
+                    </span>
                   </li>
                 </ol>
               </div>
@@ -347,23 +395,31 @@ const NullNovaWebsite = () => {
             <p style={{ color: "var(--muted)" }}>
               Create a bootable drive for complete system wiping:
             </p>
-            
+
             <ol className="iso-steps-list">
               <li className="iso-step">
                 <span className="iso-step-number">1</span>
-                <span>Download the <b>NullNova ISO file</b></span>
+                <span>
+                  Download the <b>NullNova ISO file</b>
+                </span>
               </li>
               <li className="iso-step">
                 <span className="iso-step-number">2</span>
-                <span>Use <b>Rufus</b> or similar tool to create bootable USB</span>
+                <span>
+                  Use <b>Rufus</b> or similar tool to create bootable USB
+                </span>
               </li>
               <li className="iso-step">
                 <span className="iso-step-number">3</span>
-                <span>Boot target computer from <b>USB/CD</b></span>
+                <span>
+                  Boot target computer from <b>USB/CD</b>
+                </span>
               </li>
               <li className="iso-step">
                 <span className="iso-step-number">4</span>
-                <span>Follow on-screen instructions for <b>complete wipe</b></span>
+                <span>
+                  Follow on-screen instructions for <b>complete wipe</b>
+                </span>
               </li>
             </ol>
             <button className="download-btn">Download ISO File</button>
@@ -507,7 +563,7 @@ const NullNovaWebsite = () => {
         .modal-option p { color:var(--muted); margin:0; font-size:0.9rem; }
         .modal-back { display:flex; align-items:center; gap:8px; background:none; border:none; color:var(--muted); cursor:pointer; padding:8px; margin-bottom:16px; border-radius:8px; }
         .modal-back:hover { color:#fff; background:rgba(255,255,255,0.06); }
-        .steps-list { list-style:none; padding:0; margin:16px 0; }
+        .steps-list { list-style:none; padding:0; margin: 16px 0; }
         .step { padding:12px 0; border-bottom:1px solid var(--glass-border); }
         .step:last-child { border-bottom:none; }
         .step-number { display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; border-radius:50%; background:linear-gradient(90deg,var(--cyan),var(--fuchsia)); color:#021018; font-weight:700; font-size:0.85rem; margin-right:12px; }
@@ -590,10 +646,6 @@ const NullNovaWebsite = () => {
       <div className="nn-wrap">
         {/* NAV */}
         <header className="nn-nav" role="banner">
-                
-                  
-        
-            
           <div className="nn-logo">NullNova</div>
           <nav
             className="nn-links"
@@ -612,14 +664,16 @@ const NullNovaWebsite = () => {
           <button className="nn-cta" aria-label="Get started">
             Get Started
           </button>
-         <div>
-                <SignedOut>
-                  <SignInButton className="nn-cta" />
-                </SignedOut>
-                <SignedIn>
-                  <UserButton appearance={{ elements: { userButtonBox: 'nn-cta' } }} />
-                </SignedIn>
-         </div> 
+          <div>
+            <SignedOut>
+              <SignInButton className="nn-cta" />
+            </SignedOut>
+            <SignedIn>
+              <UserButton
+                appearance={{ elements: { userButtonBox: "nn-cta" } }}
+              />
+            </SignedIn>
+          </div>
         </header>
 
         {/* HERO */}
@@ -628,8 +682,6 @@ const NullNovaWebsite = () => {
             className="hero"
             role="region"
             aria-labelledby="hero-heading">
-
-
             <h1 id="hero-heading" className="hero-title">
               {gradientText(
                 "Complete Data",
@@ -652,19 +704,25 @@ const NullNovaWebsite = () => {
               className="hero-buttons"
               role="region"
               aria-label="Primary actions">
-              <button className="btn btn-primary" onClick={openModal} title="Download NullNova">
+              <button
+                className="btn btn-primary"
+                onClick={openModal}
+                title="Download NullNova">
                 <IconDownload
                   className="icon-small"
                   style={{ width: 16, height: 16 }}
                 />
                 Free Download
               </button>
-              <button className="btn btn-secondary" title="Watch demo">
-                <IconPlay
+              <button
+                className="btn btn-primary"
+                onClick={() => (window.location.href = "/verify")}
+                title="Verify">
+                <IconCheck
                   className="icon-small"
-                  style={{ width: 14, height: 14 }}
+                  style={{ width: 18, height: 16 }}
                 />
-                Watch Demo
+                Verify
               </button>
             </div>
 
@@ -856,7 +914,7 @@ const NullNovaWebsite = () => {
       {/* MODAL */}
       {showModal && (
         <div className="modal-overlay" onClick={closeModal}>
-          <div className="modal-content" onClick={e => e.stopPropagation()}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
             {renderModalContent()}
           </div>
         </div>
