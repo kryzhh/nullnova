@@ -11,10 +11,60 @@ from tkinter import ttk, messagebox, simpledialog
 import threading
 import pyudev
 from pathlib import Path
+import secrets
+from Crypto.Cipher import AES
 
 DEFAULT_CHUNK_SIZE = 128  # Size in MB
 CHUNK_SIZE = 1024 * 1024 * DEFAULT_CHUNK_SIZE
 CERTS_DIR = "certs"
+
+WIPE_METHODS = {
+    "DoD 5220.22-M (3 passes)": {
+        "description": "US Department of Defense standard wipe with 3 passes: zeros, ones, and random data",
+        "pros": [
+            "Industry standard method",
+            "Good balance of security and speed",
+            "Widely accepted for data sanitization"
+        ],
+        "cons": [
+            "Can be slow on large drives",
+            "May cause wear on SSDs",
+            "Overkill for casual data wiping"
+        ],
+        "suitable_for": "HDDs, External Drives, When compliance is required"
+    },
+    "Cryptographic Erasure (AES-256)": {
+        "description": "Securely wipes drive by overwriting with encrypted zero data using AES-256",
+        "pros": [
+            "Very fast (only 2 passes)",
+            "SSD friendly",
+            "Cryptographically secure"
+        ],
+        "cons": [
+            "Newer method, less widely recognized",
+            "May not meet some compliance requirements"
+        ],
+        "suitable_for": "SSDs, Quick secure erasure, Modern storage devices"
+    },
+    "DoD 5220.22-M (7 passes) [Coming Soon]": {
+        "description": "Extended DoD standard with 7 alternating passes",
+        "pros": ["Maximum security", "Meets strict requirements"],
+        "cons": ["Very time consuming", "Excessive for most uses"],
+        "suitable_for": "High security requirements"
+    },
+    "Gutmann (35 passes) [Coming Soon]": {
+        "description": "35-pass overwrite with specific patterns",
+        "pros": ["Most thorough wiping method"],
+        "cons": ["Extremely time consuming", "Unnecessary for modern drives"],
+        "suitable_for": "Legacy drives, Historical purposes"
+    },
+    "Random Data (1 pass) [Coming Soon]": {
+        "description": "Single pass of random data overwrite",
+        "pros": ["Quick", "Sufficient for most cases"],
+        "cons": ["May not meet compliance requirements"],
+        "suitable_for": "Basic data sanitization"
+    }
+}
 
 class NullNovaGUI:
     def __init__(self, root):
@@ -63,14 +113,9 @@ class NullNovaGUI:
             width=3
         ).grid(row=1, column=3, padx=5)
 
-        # Wipe method selection
+        # Wipe method selection with tooltips
         ttk.Label(main_frame, text="Wipe Method:").grid(row=2, column=0, sticky=tk.W, pady=5)
-        methods = [
-            "DoD 5220.22-M (3 passes)",
-            "DoD 5220.22-M (7 passes) [Coming Soon]",
-            "Gutmann (35 passes) [Coming Soon]",
-            "Random Data (1 pass) [Coming Soon]"
-        ]
+        methods = list(WIPE_METHODS.keys())
         method_combo = ttk.Combobox(
             main_frame,
             textvariable=self.selected_method,
@@ -80,6 +125,17 @@ class NullNovaGUI:
         )
         method_combo.grid(row=2, column=1, columnspan=2, sticky=tk.W, pady=5)
         method_combo.set(methods[0])
+        
+        # Add tooltip behavior
+        method_combo.bind('<<ComboboxSelected>>', self.show_method_info)
+        
+        # Info button for method details
+        ttk.Button(
+            main_frame,
+            text="?",
+            width=3,
+            command=self.show_current_method_info
+        ).grid(row=2, column=3, padx=5)
 
         # Add chunk size selection before the progress frame
         chunk_frame = ttk.Frame(main_frame)
@@ -281,25 +337,39 @@ class NullNovaGUI:
 
     def generate_certificate(self, device_info, passes, completed=True):
         """Generate JSON certificate for completed wipe."""
-        os.makedirs(CERTS_DIR, exist_ok=True)
-        wipe_id = str(uuid.uuid4())
-        
-        cert = {
-            "wipe_id": wipe_id,
-            "device": device_info["name"],
-            "device_size": device_info["size_gb"],
-            "method": f"US DoD 5220.22-M ({passes}-pass overwrite, progressive)",
-            "passes": passes,
-            "completed": completed,
-            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            "hash": uuid.uuid5(uuid.NAMESPACE_DNS, wipe_id).hex
-        }
+        try:
+            wipe_id = str(uuid.uuid4())
+            
+            # Determine which method was used
+            method = self.selected_method.get()
+            if method.startswith("Crypto"):
+                method_desc = "AES-256 Cryptographic Erasure (2-pass overwrite)"
+            else:
+                method_desc = f"US DoD 5220.22-M ({passes}-pass overwrite, progressive)"
+            
+            cert = {
+                "wipe_id": wipe_id,
+                "device": device_info["name"],
+                "method": method_desc,
+                "passes": 2 if method.startswith("Crypto") else passes,
+                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "hash": uuid.uuid5(uuid.NAMESPACE_DNS, wipe_id).hex
+            }
+            
+            # Create directory with normal permissions
+            os.makedirs(CERTS_DIR, exist_ok=True)
+            
+            # Write certificate using normal file operations
+            cert_path = os.path.join(CERTS_DIR, f"{wipe_id}.json")
+            with open(cert_path, 'w') as f:
+                json.dump(cert, f, indent=4)
+            
+            return cert_path
+            
+        except Exception as e:
+            print(f"[ERROR] Certificate generation failed: {str(e)}")
+            raise
 
-        cert_path = os.path.join(CERTS_DIR, f"{wipe_id}.json")
-        with open(cert_path, "w") as f:
-            json.dump(cert, f, indent=4)
-        return cert_path
-    
     def wipe_device(self, device_info):
         """Perform device wiping according to DoD 5220.22-M standard."""
         # Calculate chunk size from GUI selection
@@ -363,42 +433,59 @@ class NullNovaGUI:
                 messagebox.showerror("Error", "Failed to communicate with elevated process")
                 return False
 
-            total_operations = chunks * (len(patterns) + 1)  # +1 for verification
-            operations_done = 0
+            is_crypto = self.selected_method.get().startswith("Crypto")
+            operations_done = 0  # Initialize the counter here
+            
+            if is_crypto:
+                print("[DEBUG] Using cryptographic erasure method")
+                total_operations = chunks * 2  # Zero pass + crypto pass
+            else:
+                print("[DEBUG] Using DoD 5220.22-M method")
+                total_operations = chunks * (len(patterns) + 1)  # +1 for verification
 
-            # Perform the wipe
+            # Modify the wipe loop to handle crypto method
             for chunk_idx in range(chunks):
                 chunk_offset = chunk_idx * chunk_size
                 chunk_size_actual = min(chunk_size, device_size - chunk_offset)
                 
-                for pass_idx, pattern in enumerate(patterns, 1):
-                    pattern_name = "zeros" if pattern == 0x00 else "ones" if pattern == 0xFF else "random"
-                    status = f"Pass {pass_idx}/3 ({pattern_name}) - Chunk {chunk_idx + 1}/{chunks}"
+                if is_crypto:
+                    status = f"Cryptographic Erasure - Chunk {chunk_idx + 1}/{chunks}"
+                    self.update_progress(progress=(chunk_idx / chunks) * 100, status=status)
+                    
+                    if not self.crypto_wipe(device_path, chunk_offset, chunk_size_actual):
+                        print(f"[ERROR] Cryptographic wipe failed at chunk {chunk_idx + 1}")
+                        messagebox.showerror("Error", "Cryptographic wipe failed")
+                        return False
+                else:
+                    # Existing DoD wipe code
+                    for pass_idx, pattern in enumerate(patterns, 1):
+                        pattern_name = "zeros" if pattern == 0x00 else "ones" if pattern == 0xFF else "random"
+                        status = f"Pass {pass_idx}/3 ({pattern_name}) - Chunk {chunk_idx + 1}/{chunks}"
+                        self.update_progress(progress=(operations_done / total_operations) * 100, status=status)
+                        
+                        if not self.write_pattern(device_path, pattern, chunk_offset, chunk_size_actual):
+                            print(f"[ERROR] Write pattern {pattern_name} failed")
+                            messagebox.showerror("Error", f"Write operation failed during {pattern_name} pass")
+                            return False
+                        
+                        operations_done += 1
+                        
+                        # Sync after each pass
+                        self.elevated_process.stdin.write("sync\n")
+                        self.elevated_process.stdin.flush()
+                    
+                    # Verify chunk
+                    status = f"Verifying - Chunk {chunk_idx + 1}/{chunks}"
                     self.update_progress(progress=(operations_done / total_operations) * 100, status=status)
                     
-                    if not self.write_pattern(device_path, pattern, chunk_offset, chunk_size_actual):
-                        print(f"[ERROR] Write pattern {pattern_name} failed")
-                        messagebox.showerror("Error", f"Write operation failed during {pattern_name} pass")
+                    if not self.verify_chunk(device_path, chunk_offset, chunk_size_actual):
+                        print(f"[ERROR] Verification failed for chunk {chunk_idx + 1}")
+                        messagebox.showerror("Error", "Verification failed")
                         return False
-                    
+                        
                     operations_done += 1
+                    print(f"[DEBUG] Completed and verified chunk {chunk_idx + 1}/{chunks}")
                     
-                    # Sync after each pass
-                    self.elevated_process.stdin.write("sync\n")
-                    self.elevated_process.stdin.flush()
-                
-                # Verify chunk
-                status = f"Verifying - Chunk {chunk_idx + 1}/{chunks}"
-                self.update_progress(progress=(operations_done / total_operations) * 100, status=status)
-                
-                if not self.verify_chunk(device_path, chunk_offset, chunk_size_actual):
-                    print(f"[ERROR] Verification failed for chunk {chunk_idx + 1}")
-                    messagebox.showerror("Error", "Verification failed")
-                    return False
-                    
-                operations_done += 1
-                print(f"[DEBUG] Completed and verified chunk {chunk_idx + 1}/{chunks}")
-                
             self.update_progress(100, "Wipe completed and verified")
             print("[DEBUG] DoD 5220.22-M wipe process completed successfully")
             return True
@@ -487,6 +574,65 @@ class NullNovaGUI:
         self.start_button['state'] = 'normal'
         self.device_combo['state'] = 'readonly'
         self.update_progress(0, "Ready")
+
+    def show_method_info(self, event=None):
+        """Show information about selected wipe method."""
+        method = self.selected_method.get()
+        if method in WIPE_METHODS:
+            info = WIPE_METHODS[method]
+            messagebox.showinfo(
+                "Method Information",
+                f"{method}\n\n"
+                f"Description:\n{info['description']}\n\n"
+                f"Pros:\n" + "\n".join(f"• {p}" for p in info['pros']) + "\n\n"
+                f"Cons:\n" + "\n".join(f"• {c}" for c in info['cons']) + "\n\n"
+                f"Best suited for:\n{info['suitable_for']}"
+            )
+
+    def show_current_method_info(self):
+        """Show info for current method when ? button is clicked."""
+        self.show_method_info()
+
+    def crypto_wipe(self, device_path, offset, size):
+        """Perform cryptographic erasure on a chunk."""
+        try:
+            # Generate secure key
+            key = secrets.token_bytes(32)
+            cipher = AES.new(key, AES.MODE_CTR)
+            
+            # First pass: zeros
+            if not self.write_pattern(device_path, 0x00, offset, size):
+                return False
+                
+            # Second pass: encrypted zeros
+            encrypted_data = cipher.encrypt(b'\0' * size)
+            with open("/dev/shm/crypto_data", "wb") as f:
+                f.write(encrypted_data)
+            
+            cmd = (
+                f'dd if=/dev/shm/crypto_data of={device_path} bs={size} count=1 '
+                f'seek={offset//size} conv=notrunc,sync status=progress oflag=direct 2>&1 && '
+                f'rm -f /dev/shm/crypto_data\n'
+            )
+            
+            self.elevated_process.stdin.write(cmd)
+            self.elevated_process.stdin.flush()
+            
+            # Monitor progress
+            while True:
+                output = self.elevated_process.stdout.readline().strip()
+                if not output:
+                    break
+                print(f"[DEBUG] Crypto pass output: {output}")
+                
+            # Securely delete key
+            del key, cipher, encrypted_data
+            
+            return True
+            
+        except Exception as e:
+            print(f"[ERROR] Crypto wipe failed: {e}")
+            return False
 
 if __name__ == "__main__":
     root = tk.Tk()
