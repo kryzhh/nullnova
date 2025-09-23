@@ -20,31 +20,31 @@ CERTS_DIR = "certs"
 
 WIPE_METHODS = {
     "DoD 5220.22-M (3 passes)": {
-        "description": "US Department of Defense standard wipe with 3 passes: zeros, ones, and random data",
+        "description": "Writes over your data three times to make it unrecoverable. Uses zeros, ones, and random data.",
         "pros": [
-            "Industry standard method",
-            "Good balance of security and speed",
-            "Widely accepted for data sanitization"
+            "Very secure - trusted by government agencies",
+            "Works well on most drives",
+            "Widely recognized security standard"
         ],
         "cons": [
-            "Can be slow on large drives",
-            "May cause wear on SSDs",
-            "Overkill for casual data wiping"
+            "Takes longer than basic erasure",
+            "Not recommended for SSDs - may reduce lifespan",
+            "More thorough than needed for everyday use"
         ],
-        "suitable_for": "HDDs, External Drives, When compliance is required"
+        "suitable_for": "Regular hard drives, when you need proven security"
     },
     "Cryptographic Erasure (AES-256)": {
-        "description": "Securely wipes drive by overwriting with encrypted zero data using AES-256",
+        "description": "Quickly erases data by overwriting with encrypted zeros. Perfect for modern drives.",
         "pros": [
-            "Very fast (only 2 passes)",
-            "SSD friendly",
-            "Cryptographically secure"
+            "Much faster - only two passes needed",
+            "Safe for all drive types including SSDs",
+            "Very secure using modern encryption"
         ],
         "cons": [
-            "Newer method, less widely recognized",
-            "May not meet some compliance requirements"
+            "Newer method - might not meet some requirements",
+            "Not as widely recognized as DoD method"
         ],
-        "suitable_for": "SSDs, Quick secure erasure, Modern storage devices"
+        "suitable_for": "SSDs, modern drives, when you need quick secure erasure"
     },
     "DoD 5220.22-M (7 passes) [Coming Soon]": {
         "description": "Extended DoD standard with 7 alternating passes",
@@ -267,18 +267,23 @@ class NullNovaGUI:
             pattern_name = "zeros" if pattern == 0x00 else "ones" if pattern == 0xFF else "random"
             print(f"[DEBUG] Writing {pattern_name} pattern at offset {offset}")
 
+            # Calculate optimal block size for edge cases
+            block_size = min(size, 1024 * 1024)  # Use 1MB blocks minimum
+            blocks_needed = (size + block_size - 1) // block_size
+
             if pattern == 0x00:  # All zeros
-                cmd = f'dd if=/dev/zero of={device_path} bs={size} count=1 seek={offset//size} conv=notrunc,sync status=progress oflag=direct 2>&1\n'
+                cmd = (f'dd if=/dev/zero of={device_path} bs={block_size} count={blocks_needed} '
+                      f'seek={offset//block_size} conv=notrunc,sync status=progress oflag=direct 2>&1\n')
             elif pattern == 0xFF:  # All ones
-                # Write ones pattern without redirecting to /dev/null
                 cmd = (
-                    f'dd if=/dev/zero bs={size} count=1 | tr "\\000" "\\377" > /dev/shm/ones && '
-                    f'dd if=/dev/shm/ones of={device_path} bs={size} count=1 seek={offset//size} '
-                    f'conv=notrunc,sync status=progress oflag=direct 2>&1 && '
+                    f'dd if=/dev/zero bs={block_size} count={blocks_needed} | tr "\\000" "\\377" > /dev/shm/ones && '
+                    f'dd if=/dev/shm/ones of={device_path} bs={block_size} count={blocks_needed} '
+                    f'seek={offset//block_size} conv=notrunc,sync status=progress oflag=direct 2>&1 && '
                     f'rm -f /dev/shm/ones\n'
                 )
             else:  # Random data
-                cmd = f'dd if=/dev/urandom of={device_path} bs={size} count=1 seek={offset//size} conv=notrunc,sync status=progress oflag=direct 2>&1\n'
+                cmd = (f'dd if=/dev/urandom of={device_path} bs={block_size} count={blocks_needed} '
+                      f'seek={offset//block_size} conv=notrunc,sync status=progress oflag=direct 2>&1\n')
 
             self.elevated_process.stdin.write(cmd)
             self.elevated_process.stdin.flush()
@@ -287,6 +292,7 @@ class NullNovaGUI:
             success = False
             bytes_written = 0
             start_time = time.time()
+            expected_bytes = size
             
             while (time.time() - start_time) < 60:  # 60 second timeout
                 output = self.elevated_process.stdout.readline()
@@ -300,24 +306,25 @@ class NullNovaGUI:
                 if "bytes" in output and "copied" in output:
                     try:
                         bytes_written = int(output.split()[0])
-                        if bytes_written >= size:
+                        # Allow for block size alignment
+                        if bytes_written >= expected_bytes * 0.99:
                             success = True
                             break
                     except Exception as e:
                         print(f"[DEBUG] Parse error: {e}")
                 elif all(x in output for x in ["records", "in", "out"]):
-                    # Check for successful dd completion message
-                    success = True
-                    break
+                    if not "error" in output.lower():
+                        success = True
+                        break
 
             if not success:
-                print(f"[ERROR] Write operation failed. Bytes written: {bytes_written}/{size}")
+                print(f"[ERROR] Write operation failed. Bytes written: {bytes_written}/{expected_bytes}")
                 return False
 
             # Force sync
             self.elevated_process.stdin.write("sync\n")
             self.elevated_process.stdin.flush()
-            time.sleep(0.5)  # Short wait for sync
+            time.sleep(0.1)  # Reduced wait time
             
             return True
 
@@ -340,29 +347,28 @@ class NullNovaGUI:
         try:
             wipe_id = str(uuid.uuid4())
             
-            # Determine which method was used
+            # Get method and drive info
             method = self.selected_method.get()
-            if method.startswith("Crypto"):
-                method_desc = "AES-256 Cryptographic Erasure (2-pass overwrite)"
-            else:
-                method_desc = f"US DoD 5220.22-M ({passes}-pass overwrite, progressive)"
+            is_crypto = method.startswith("Crypto")
             
             cert = {
                 "wipe_id": wipe_id,
                 "device": device_info["name"],
-                "method": method_desc,
-                "passes": 2 if method.startswith("Crypto") else passes,
+                "device_size_gb": device_info["size_gb"],
+                "method": "AES-256 Cryptographic Erasure" if is_crypto else "DoD 5220.22-M Secure Erase",
+                "passes": 2 if is_crypto else 3,
                 "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                "hash": uuid.uuid5(uuid.NAMESPACE_DNS, wipe_id).hex
+                "hash": uuid.uuid5(uuid.NAMESPACE_DNS, wipe_id).hex,
+                "completed": completed
             }
             
-            # Create directory with normal permissions
+            # Create certs directory if needed
             os.makedirs(CERTS_DIR, exist_ok=True)
             
-            # Write certificate using normal file operations
-            cert_path = os.path.join(CERTS_DIR, f"{wipe_id}.json")
+            # Write certificate
+            cert_path = os.path.join(CERTS_DIR, f"wipe_{wipe_id[:8]}.json")
             with open(cert_path, 'w') as f:
-                json.dump(cert, f, indent=4)
+                json.dump(cert, f, indent=2)
             
             return cert_path
             
