@@ -1,4 +1,7 @@
 import React, { useState, useEffect } from "react";
+import { Link } from 'react-router-dom';
+import { SignedIn, SignedOut, SignInButton, UserButton } from "@clerk/clerk-react";
+import { useUser } from "@clerk/clerk-react";
 
 // SVG Icons
 const IconUpload = ({ size = 20 }) => (
@@ -14,8 +17,8 @@ const IconText = ({ size = 20 }) => (
 );
 
 const VerifyPage = () => {
+  const { user } = useUser();
   const [jsonInput, setJsonInput] = useState("");
-  const [certificate, setCertificate] = useState(null);
   const [inputMode, setInputMode] = useState("text");
   const [isDragging, setIsDragging] = useState(false);
   const [status, setStatus] = useState("");
@@ -49,27 +52,15 @@ const VerifyPage = () => {
         setStatus("Certificate generated successfully!");
         setIsGenerating(false);
 
-        // Handle the API response - adjust based on your Lambda function's response format
-        if (data.downloadUrl) {
-          setDownloadUrl(data.downloadUrl);
+        if (data.download_url) {
+          setDownloadUrl(data.download_url);
         }
-
-        // Create local certificate object for display
-        const cert = {
-          title: "NullNova Data Wiping Certificate",
-          timestamp: new Date().toLocaleString(),
-          details: JSON.parse(jsonData),
-          certificateId: data.certificateId || `CERT-${Date.now()}`,
-          apiResponse: data,
-        };
-        setCertificate(cert);
       })
       .catch((error) => {
         console.error("Error generating certificate:", error);
         setStatus("Error generating certificate. Please try again.");
         setIsGenerating(false);
 
-        // Show error message to user
         alert(`Failed to generate certificate: ${error.message}`);
       });
   };
@@ -113,10 +104,7 @@ const VerifyPage = () => {
     }
 
     try {
-      // Validate JSON before sending to API
       JSON.parse(jsonInput);
-
-      // Send to Lambda function
       sendToApi(jsonInput);
     } catch (error) {
       alert("Invalid JSON. Please check your input.");
@@ -125,6 +113,70 @@ const VerifyPage = () => {
   };
 
   const styles = `
+    /* Header styles for VerifyPage */
+    .verify-navbar {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 20px;
+      border-radius: 12px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+      border: 1px solid rgba(255,255,255,0.09);
+      backdrop-filter: blur(8px);
+      margin: 20px 20px 0 20px;
+      max-width: 800px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    .verify-navbar-logo {
+      font-weight: 800;
+      font-size: 1.25rem;
+      background: linear-gradient(90deg, #06b6d4, #d946ef);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      text-decoration: none;
+      cursor: pointer;
+      transition: transform 0.2s ease;
+    }
+    .verify-navbar-logo:hover {
+      transform: scale(1.05);
+    }
+    .verify-navbar-links {
+      display: flex;
+      gap: 16px;
+      align-items: center;
+    }
+    .verify-navbar-link {
+      color: #9ca3af;
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 0.95rem;
+      transition: color 0.2s ease;
+    }
+    .verify-navbar-link:hover {
+      color: #fff;
+    }
+    .verify-navbar-cta {
+      display: inline-block;
+      padding: 10px 22px;
+      border-radius: 8px;
+      background: linear-gradient(90deg, #06b6d4, #d946ef);
+      color: #021018;
+      font-weight: 700;
+      text-decoration: none;
+      font-size: 1rem;
+      box-shadow: 0 4px 15px rgba(6,182,212,0.12);
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .verify-navbar-cta:hover {
+      transform: translateY(-2px) scale(1.04);
+      box-shadow: 0 8px 25px rgba(6,182,212,0.18);
+    }
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap');
 
     * {
@@ -140,12 +192,7 @@ const VerifyPage = () => {
       -moz-osx-font-smoothing: grayscale;
     }
 
-    .verify-page {
-      min-height: 100vh;
-      position: relative;
-      overflow-x: hidden;
-      width: 100%;
-    }
+ 
 
     .verify-page::before {
       content: '';
@@ -164,25 +211,38 @@ const VerifyPage = () => {
       inset: 0;
       z-index: 0;
       pointer-events: none;
-      background: 
+      background:
         radial-gradient(circle at 20% 30%, rgba(6,182,212,0.15), transparent 40%),
         radial-gradient(circle at 80% 70%, rgba(217,70,239,0.12), transparent 40%);
       animation: floatVerify 25s ease-in-out infinite alternate;
     }
 
     @keyframes floatVerify {
-      from { 
-        background: 
+      from {
+        background:
           radial-gradient(circle at 20% 30%, rgba(6,182,212,0.15), transparent 40%),
           radial-gradient(circle at 80% 70%, rgba(217,70,239,0.12), transparent 40%);
       }
-      to { 
-        background: 
+      to {
+        background:
           radial-gradient(circle at 30% 20%, rgba(6,182,212,0.12), transparent 40%),
           radial-gradient(circle at 70% 80%, rgba(217,70,239,0.15), transparent 40%);
       }
     }
+     .navbar {
+        margin: 16px;
+        margin-bottom: 0;
+        padding: 12px 16px;
+      }
 
+      .navbar-links {
+        gap: 12px;
+      }
+
+      .navbar-link {
+        font-size: 0.9rem;
+      }
+    }
     .navbar {
       position: sticky;
       top: 0;
@@ -573,42 +633,26 @@ const VerifyPage = () => {
         padding: 20px;
       }
 
-      .navbar {
-        margin: 16px;
-        margin-bottom: 0;
-        padding: 12px 16px;
-      }
-
-      .navbar-links {
-        gap: 12px;
-      }
-
-      .navbar-link {
-        font-size: 0.9rem;
-      }
-    }
+ 
   `;
 
   return (
     <div className="verify-page">
       <style>{styles}</style>
-
-      <nav className="navbar">
-        <a href="/" className="navbar-logo">
-          NullNova
-        </a>
-        <div className="navbar-links">
-          <a className="navbar-link" href="/#features">
-            Features
-          </a>
-          <a className="navbar-link" href="/#tools">
-            Tools
-          </a>
-          <a className="navbar-link" href="/#about">
-            About
-          </a>
+      <header className="verify-navbar" role="banner">
+        <div className="verify-navbar-logo">NullNova</div>
+        <nav className="verify-navbar-links" role="navigation" aria-label="Main navigation">
+          <Link className="verify-navbar-link" to="/#features">Features</Link>
+          <Link className="verify-navbar-link" to="/#tools">Tools</Link>
+          <Link className="verify-navbar-link" to="/#about">About</Link>
+        </nav>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <SignedIn>
+            <UserButton appearance={{ elements: { userButtonBox: 'verify-navbar-cta' } }} />
+          </SignedIn>
         </div>
-      </nav>
+      </header>
+
 
       <div className="verify-container">
         <div className="verify-header">
@@ -701,20 +745,9 @@ const VerifyPage = () => {
           )}
         </div>
 
-        {certificate && (
+        {downloadUrl && (
           <div className="certificate-section">
-            <h2 className="certificate-title">{certificate.title}</h2>
-            <p className="certificate-timestamp">
-              <strong>Generated:</strong> {certificate.timestamp}
-            </p>
-            {certificate.certificateId && (
-              <p className="certificate-id">
-                <strong>Certificate ID:</strong> {certificate.certificateId}
-              </p>
-            )}
-
-            {downloadUrl && (
-              <div className="download-section">
+            <div className="download-section">
                 <a
                   href={downloadUrl}
                   download
@@ -724,11 +757,6 @@ const VerifyPage = () => {
                   Download Certificate PDF
                 </a>
               </div>
-            )}
-
-            <pre className="certificate-details">
-              {JSON.stringify(certificate.details, null, 2)}
-            </pre>
           </div>
         )}
 
