@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { Link } from 'react-router-dom';
 
 // SVG Icons
 const IconUpload = ({ size = 20 }) => (
@@ -15,7 +16,6 @@ const IconText = ({ size = 20 }) => (
 
 const VerifyPage = () => {
   const [jsonInput, setJsonInput] = useState("");
-  const [certificate, setCertificate] = useState(null);
   const [inputMode, setInputMode] = useState("text");
   const [isDragging, setIsDragging] = useState(false);
   const [status, setStatus] = useState("");
@@ -49,27 +49,15 @@ const VerifyPage = () => {
         setStatus("Certificate generated successfully!");
         setIsGenerating(false);
 
-        // Handle the API response - adjust based on your Lambda function's response format
-        if (data.downloadUrl) {
-          setDownloadUrl(data.downloadUrl);
+        if (data.download_url) {
+          setDownloadUrl(data.download_url);
         }
-
-        // Create local certificate object for display
-        const cert = {
-          title: "NullNova Data Wiping Certificate",
-          timestamp: new Date().toLocaleString(),
-          details: JSON.parse(jsonData),
-          certificateId: data.certificateId || `CERT-${Date.now()}`,
-          apiResponse: data,
-        };
-        setCertificate(cert);
       })
       .catch((error) => {
         console.error("Error generating certificate:", error);
         setStatus("Error generating certificate. Please try again.");
         setIsGenerating(false);
 
-        // Show error message to user
         alert(`Failed to generate certificate: ${error.message}`);
       });
   };
@@ -113,10 +101,7 @@ const VerifyPage = () => {
     }
 
     try {
-      // Validate JSON before sending to API
       JSON.parse(jsonInput);
-
-      // Send to Lambda function
       sendToApi(jsonInput);
     } catch (error) {
       alert("Invalid JSON. Please check your input.");
@@ -145,6 +130,10 @@ const VerifyPage = () => {
       position: relative;
       overflow-x: hidden;
       width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
     }
 
     .verify-page::before {
@@ -164,20 +153,20 @@ const VerifyPage = () => {
       inset: 0;
       z-index: 0;
       pointer-events: none;
-      background: 
+      background:
         radial-gradient(circle at 20% 30%, rgba(6,182,212,0.15), transparent 40%),
         radial-gradient(circle at 80% 70%, rgba(217,70,239,0.12), transparent 40%);
       animation: floatVerify 25s ease-in-out infinite alternate;
     }
 
     @keyframes floatVerify {
-      from { 
-        background: 
+      from {
+        background:
           radial-gradient(circle at 20% 30%, rgba(6,182,212,0.15), transparent 40%),
           radial-gradient(circle at 80% 70%, rgba(217,70,239,0.12), transparent 40%);
       }
-      to { 
-        background: 
+      to {
+        background:
           radial-gradient(circle at 30% 20%, rgba(6,182,212,0.12), transparent 40%),
           radial-gradient(circle at 70% 80%, rgba(217,70,239,0.15), transparent 40%);
       }
@@ -701,20 +690,9 @@ const VerifyPage = () => {
           )}
         </div>
 
-        {certificate && (
+        {downloadUrl && (
           <div className="certificate-section">
-            <h2 className="certificate-title">{certificate.title}</h2>
-            <p className="certificate-timestamp">
-              <strong>Generated:</strong> {certificate.timestamp}
-            </p>
-            {certificate.certificateId && (
-              <p className="certificate-id">
-                <strong>Certificate ID:</strong> {certificate.certificateId}
-              </p>
-            )}
-
-            {downloadUrl && (
-              <div className="download-section">
+            <div className="download-section">
                 <a
                   href={downloadUrl}
                   download
@@ -724,11 +702,6 @@ const VerifyPage = () => {
                   Download Certificate PDF
                 </a>
               </div>
-            )}
-
-            <pre className="certificate-details">
-              {JSON.stringify(certificate.details, null, 2)}
-            </pre>
           </div>
         )}
 
