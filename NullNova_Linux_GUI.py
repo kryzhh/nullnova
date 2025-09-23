@@ -352,14 +352,12 @@ class NullNovaGUI:
             is_crypto = method.startswith("Crypto")
             
             cert = {
-                "wipe_id": wipe_id,
-                "device": device_info["name"],
-                "device_size_gb": device_info["size_gb"],
-                "method": "AES-256 Cryptographic Erasure" if is_crypto else "DoD 5220.22-M Secure Erase",
-                "passes": 2 if is_crypto else 3,
-                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                "hash": uuid.uuid5(uuid.NAMESPACE_DNS, wipe_id).hex,
-                "completed": completed
+                "WipeDevice": wipe_id,
+                "Device": device_info["name"],
+                "Method": "AES-256 Cryptographic Erasure" if is_crypto else "DoD 5220.22-M Secure Erase",
+                "Passes": 2 if is_crypto else 3,
+                "Timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "Hash": uuid.uuid5(uuid.NAMESPACE_DNS, wipe_id).hex,
             }
             
             # Create certs directory if needed

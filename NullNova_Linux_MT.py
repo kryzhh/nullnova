@@ -366,12 +366,12 @@ class NullNovaGUI:
             is_crypto = method.startswith("Crypto")
             
             cert = {
-                "wipe_device": wipe_id,
-                "device": device_info["name"],
-                "method": "AES-256 Cryptographic Erasure" if is_crypto else "DoD 5220.22-M Secure Erase",
-                "passes": 2 if is_crypto else 3,
-                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                "hash": uuid.uuid5(uuid.NAMESPACE_DNS, wipe_id).hex,
+                "WipeDevice": wipe_id,
+                "Device": device_info["name"],
+                "Method": "AES-256 Cryptographic Erasure" if is_crypto else "DoD 5220.22-M Secure Erase",
+                "Passes": 2 if is_crypto else 3,
+                "Timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "Hash": uuid.uuid5(uuid.NAMESPACE_DNS, wipe_id).hex,
             }
             
             # Create certs directory if needed
@@ -680,32 +680,62 @@ class NullNovaGUI:
                 
             # Second pass: encrypted zeros
             encrypted_data = cipher.encrypt(b'\0' * size)
-            with open("/dev/shm/crypto_data", "wb") as f:
-                f.write(encrypted_data)
+            temp_file = f"/dev/shm/crypto_data_{uuid.uuid4().hex[:8]}"
             
-            cmd = (
-                f'dd if=/dev/shm/crypto_data of={device_path} bs={size} count=1 '
-                f'seek={offset//size} conv=notrunc,sync status=progress oflag=direct 2>&1 && '
-                f'rm -f /dev/shm/crypto_data\n'
-            )
-            
-            self.elevated_process.stdin.write(cmd)
-            self.elevated_process.stdin.flush()
-            
-            # Monitor progress
-            while True:
-                output = self.elevated_process.stdout.readline().strip()
-                if not output:
-                    break
-                print(f"[DEBUG] Crypto pass output: {output}")
+            try:
+                with open(temp_file, "wb") as f:
+                    f.write(encrypted_data)
                 
-            # Securely delete key
-            del key, cipher, encrypted_data
+                cmd = (
+                    f'dd if={temp_file} of={device_path} bs={size} count=1 '
+                    f'seek={offset//size} conv=notrunc,fsync status=progress 2>&1 && '
+                    f'rm -f {temp_file}\n'
+                )
+                
+                self.elevated_process.stdin.write(cmd)
+                self.elevated_process.stdin.flush()
+                
+                success = False
+                bytes_written = 0
+                start_time = time.time()
+                
+                while (time.time() - start_time) < 60:
+                    output = self.elevated_process.stdout.readline().strip()
+                    if not output:
+                        time.sleep(0.1)
+                        continue
+                    
+                    print(f"[DEBUG] Crypto pass output: {output}")
+                    if "bytes" in output and "copied" in output:
+                        try:
+                            bytes_written = int(output.split()[0])
+                            if bytes_written >= size * 0.99:
+                                success = True
+                                break
+                        except ValueError:
+                            continue
+                
+                if not success:
+                    print(f"[ERROR] Crypto write incomplete: {bytes_written}/{size}")
+                    return False
+
+                # Force sync
+                self.elevated_process.stdin.write("sync\n")
+                self.elevated_process.stdin.flush()
+                
+                return True
             
-            return True
+            finally:
+                # Clean up temp file
+                try:
+                    os.remove(temp_file)
+                except:
+                    pass
+                # Securely delete key
+                del key, cipher, encrypted_data
             
         except Exception as e:
-            print(f"[ERROR] Crypto wipe failed: {e}")
+            print(f"[ERROR] Crypto wipe failed: {str(e)}")
             return False
 
     def is_ssd(self, device_name):
@@ -785,7 +815,7 @@ class WipeWorker:
             return self.elevated_process.poll() is None
         except Exception as e:
             print(f"[ERROR] Worker {self.worker_id} init failed: {e}")
-            return Falsep
+            return False
 
     def write_pattern(self, pattern, offset, size):
         """Write pattern to device."""
