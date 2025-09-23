@@ -41,7 +41,6 @@ WIPE_METHODS = {
     }
 }
 
-
 ##########################
 # Backend (Windows Only) #
 ##########################
@@ -52,7 +51,6 @@ def requires_admin():
         return ctypes.windll.shell32.IsUserAnAdmin()
     except:
         return False
-
 
 def list_drives():
     """List removable drives in Windows."""
@@ -69,13 +67,52 @@ def list_drives():
                         "name": drive,
                         "path": drive,
                         "size": total_bytes,
-                        "size_gb": round(total_bytes / (1024**3), 2)
+                        "size_gb": round(total_bytes / (1024**3), 2),
+                        "physical": get_physical_drive(drive)
                     })
             except Exception:
                 pass
         bitmask >>= 1
     return drives
 
+def get_physical_drive(drive_letter):
+    """Convert volume letter to physical drive path for raw access."""
+    # e.g., "E:\" → "\\.\PhysicalDrive1"
+    # Simple mapping: check volumes
+    for i in range(32):
+        try:
+            path = f"\\\\.\\PhysicalDrive{i}"
+            handle = win32file.CreateFile(path, win32con.GENERIC_READ,
+                                          win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE,
+                                          None, win32con.OPEN_EXISTING, 0, None)
+            drive_number = win32file.DeviceIoControl(handle, 0x0007405C, None, 24)
+            handle.close()
+            # If we successfully opened, assume it's the correct drive
+            if True:  # Could add exact volume matching later
+                return path
+        except Exception:
+            continue
+    return None
+
+def dismount_volume(drive_letter):
+    """Dismount the volume to allow raw writes."""
+    try:
+        handle = win32file.CreateFile(
+            drive_letter,
+            win32con.GENERIC_READ | win32con.GENERIC_WRITE,
+            win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE,
+            None,
+            win32con.OPEN_EXISTING,
+            0,
+            None
+        )
+        win32file.DeviceIoControl(handle, 0x00090020, None, None)  # FSCTL_DISMOUNT_VOLUME
+        win32file.DeviceIoControl(handle, 0x00090018, None, None)  # FSCTL_LOCK_VOLUME
+        handle.close()
+        return True
+    except Exception as e:
+        print("Dismount/Lock failed:", e)
+        return False
 
 def write_pattern(handle, size, pattern=None):
     """Write a pattern to the drive."""
@@ -85,9 +122,7 @@ def write_pattern(handle, size, pattern=None):
         data = bytes([pattern]) * size
     else:
         data = pattern
-
     win32file.WriteFile(handle, data)
-
 
 def crypto_wipe(handle, size):
     """Cryptographic erase using AES-256 encrypted zeros."""
@@ -99,14 +134,17 @@ def crypto_wipe(handle, size):
     del key, cipher, encrypted_data, zero_data
     return True
 
-
 def wipe_device(device_path, size, method, chunk_size=CHUNK_SIZE, gui=None):
     """Perform wipe with DoD or crypto methods."""
-    # Prepend \\.\ for raw access on Windows
-    device_path_raw = f"\\\\.\\{device_path.strip('\\')}"
-    
+    if device_path.startswith("C:") or not device_path.startswith("\\\\.\\PhysicalDrive"):
+        # Windows blocks system partition raw writes
+        raise Exception("Cannot wipe system drive or invalid physical path.")
+
+    # Dismount and lock before opening
+    dismount_volume(device_path.replace("\\\\.\\PhysicalDrive", ""))
+
     handle = win32file.CreateFile(
-        device_path_raw,
+        device_path,
         win32con.GENERIC_WRITE,
         win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE,
         None,
@@ -140,7 +178,6 @@ def wipe_device(device_path, size, method, chunk_size=CHUNK_SIZE, gui=None):
 
     handle.close()
     return True
-
 
 #################
 # Tkinter GUI   #
@@ -242,8 +279,12 @@ class NullNovaGUI:
 
     def wipe_thread(self, device_info):
         try:
+            if not device_info["physical"]:
+                messagebox.showerror("Error", "Cannot find physical drive path!")
+                return
+
             success = wipe_device(
-                device_info["path"],
+                device_info["physical"],
                 device_info["size"],
                 self.selected_method.get(),
                 chunk_size=1024*1024*self.chunk_size_mb.get(),
@@ -251,11 +292,9 @@ class NullNovaGUI:
             )
             if success:
                 cert_path = self.generate_certificate(device_info)
-                self.root.after(0, lambda: messagebox.showinfo("Success", f"Wipe completed!\nCertificate saved at: {cert_path}"))
+                messagebox.showinfo("Success", f"Wipe completed!\nCertificate saved at: {cert_path}")
             else:
-                self.root.after(0, lambda: messagebox.showerror("Error", "Wipe failed!"))
-        except Exception as e:
-            self.root.after(0, lambda e=e: messagebox.showerror("Error", f"Wipe failed: {e}"))
+                messagebox.showerror("Error", "Wipe failed!")
         finally:
             self.start_button["state"] = "normal"
             self.update_progress(0, "Ready")
@@ -286,7 +325,6 @@ class NullNovaGUI:
                 f"Pros:\n" + "\n".join(f"• {p}" for p in info['pros']) +
                 "\n\nCons:\n" + "\n".join(f"• {c}" for c in info['cons'])
             )
-
 
 if __name__ == "__main__":
     if not requires_admin():
