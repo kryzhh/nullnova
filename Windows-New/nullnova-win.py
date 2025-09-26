@@ -20,12 +20,131 @@ import datetime
 import subprocess
 import ctypes
 from ctypes import wintypes
+import msvcrt
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QLabel, QPushButton,
     QListWidget, QMessageBox, QProgressBar, QHBoxLayout, QRadioButton,
     QButtonGroup, QLineEdit, QCheckBox
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
+
+# Windows API Constants
+GENERIC_READ = 0x80000000
+GENERIC_WRITE = 0x40000000
+FILE_SHARE_READ = 0x00000001
+FILE_SHARE_WRITE = 0x00000002
+OPEN_EXISTING = 3
+FILE_ATTRIBUTE_NORMAL = 0x80
+FILE_FLAG_NO_BUFFERING = 0x20000000
+FILE_FLAG_WRITE_THROUGH = 0x80000000
+INVALID_HANDLE_VALUE = -1
+
+# -------------------------
+# Low-level file operations using Windows API
+# -------------------------
+def open_physical_drive_handle(device_path):
+    """
+    Open a handle to a physical drive using Windows API.
+    Returns (handle, error_message) tuple.
+    """
+    kernel32 = ctypes.windll.kernel32
+    
+    try:
+        # Open with exclusive access and no buffering for direct disk access
+        handle = kernel32.CreateFileW(
+            device_path,
+            GENERIC_READ | GENERIC_WRITE,
+            0,  # No sharing - exclusive access
+            None,
+            OPEN_EXISTING,
+            FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH,
+            None
+        )
+        
+        if handle == INVALID_HANDLE_VALUE:
+            error_code = kernel32.GetLastError()
+            if error_code == 2:  # File not found
+                return None, f"Device not found: {device_path}"
+            elif error_code == 5:  # Access denied
+                return None, f"Access denied. Run as Administrator: {device_path}"
+            elif error_code == 32:  # Sharing violation
+                return None, f"Device is in use by another process: {device_path}"
+            else:
+                return None, f"Failed to open device (Error {error_code}): {device_path}"
+        
+        return handle, None
+        
+    except Exception as e:
+        return None, f"Exception opening device: {e}"
+
+def write_to_physical_drive(handle, data):
+    """
+    Write data to physical drive using Windows API.
+    Returns (bytes_written, error_message) tuple.
+    """
+    kernel32 = ctypes.windll.kernel32
+    
+    try:
+        bytes_written = wintypes.DWORD()
+        result = kernel32.WriteFile(
+            handle,
+            data,
+            len(data),
+            ctypes.byref(bytes_written),
+            None
+        )
+        
+        if not result:
+            error_code = kernel32.GetLastError()
+            return 0, f"Write failed (Error {error_code})"
+        
+        return bytes_written.value, None
+        
+    except Exception as e:
+        return 0, f"Exception during write: {e}"
+
+def close_physical_drive_handle(handle):
+    """
+    Close a physical drive handle.
+    """
+    if handle and handle != INVALID_HANDLE_VALUE:
+        kernel32 = ctypes.windll.kernel32
+        kernel32.CloseHandle(handle)
+
+def test_device_access(device_path):
+    """
+    Test if we can open and close the device without errors.
+    Returns (success, error_message) tuple.
+    """
+    handle, error_msg = open_physical_drive_handle(device_path)
+    if handle is None:
+        return False, error_msg
+    
+    try:
+        # Try to get device information
+        kernel32 = ctypes.windll.kernel32
+        bytes_returned = wintypes.DWORD()
+        
+        # Try a simple device control operation (GET_LENGTH_INFO)
+        result = kernel32.DeviceIoControl(
+            handle,
+            0x0007405C,  # IOCTL_DISK_GET_LENGTH_INFO
+            None, 0,
+            None, 0,
+            ctypes.byref(bytes_returned),
+            None
+        )
+        
+        close_physical_drive_handle(handle)
+        
+        if result:
+            return True, "Device is accessible"
+        else:
+            return True, "Device opened successfully (but may have limited access)"
+            
+    except Exception as e:
+        close_physical_drive_handle(handle)
+        return False, f"Device access test failed: {e}"
 
 # -------------------------
 # Utility: Drive enumeration
@@ -51,7 +170,12 @@ def enumerate_windows_disks():
             pd_path = getattr(disk, "DeviceID", None)  # e.g. \\.\PHYSICALDRIVE0
             if not pd_path:
                 continue
-            pd["physical_device"] = pd_path.replace("\\\\", "\\")  # keep consistent
+            # Normalize the device path - ensure it starts with \\.\
+            if pd_path.startswith("\\\\"):
+                pd_path = pd_path[2:]  # Remove extra backslashes
+            if not pd_path.startswith("\\\\.\\"):
+                pd_path = "\\\\.\\" + pd_path.lstrip("\\")
+            pd["physical_device"] = pd_path
             pd["model"] = getattr(disk, "Model", "") or ""
             pd["serial"] = (getattr(disk, "SerialNumber", "") or "").strip()
             pd["size_bytes"] = int(getattr(disk, "Size", 0) or 0)
@@ -341,64 +465,73 @@ class WipeWorker(QThread):
             self.log.emit("Waiting 2 seconds for system to release handles...")
             time.sleep(2)
             
-            self.log.emit(f"REAL: opening raw device {raw_path} (requires admin)...")
+            # Test device access before proceeding
+            self.log.emit("Testing device access...")
+            access_ok, access_msg = test_device_access(raw_path)
+            if not access_ok:
+                raise RuntimeError(f"Device access test failed: {access_msg}")
+            self.log.emit(f"Device access test: {access_msg}")
+            
+            self.log.emit(f"REAL: preparing to wipe raw device {raw_path} (requires admin)...")
 
-            chunk = self.chunk_mb * 1024 * 1024
+            # Ensure chunk size is aligned to sector boundary (512 bytes)
+            sector_size = 512
+            chunk = ((self.chunk_mb * 1024 * 1024) // sector_size) * sector_size
+            if chunk == 0:
+                chunk = sector_size
+                
             written = 0
-            # Attempt to open raw device for binary write
-            # This will require admin privileges
-            f = None
-            try:
-                # open in binary mode with proper error handling
-                f = open(raw_path, "r+b", buffering=0)
-                self.log.emit(f"Successfully opened device {raw_path}")
-            except PermissionError as pe:
-                raise RuntimeError("Permission denied. Please run as Administrator. " + str(pe))
-            except (OSError, IOError) as e:
-                if e.errno == 9:  # Bad file descriptor
-                    raise RuntimeError(f"Bad file descriptor - device may be in use or inaccessible: {e}")
-                raise RuntimeError(f"Failed to open raw device {raw_path}: {e}")
-            except Exception as e:
-                raise RuntimeError(f"Failed to open raw device {raw_path}: {e}")
+            handle = None
+            
+            # Attempt to open raw device using Windows API
+            self.log.emit(f"Opening device handle for {raw_path}...")
+            handle, error_msg = open_physical_drive_handle(raw_path)
+            if handle is None:
+                raise RuntimeError(error_msg)
+            
+            self.log.emit(f"Successfully opened device handle for {raw_path}")
 
             try:
                 # Overwrite entire device with random bytes in chunks
                 import os as _os
                 while written < total:
-                    if not f or f.closed:
-                        raise RuntimeError("File handle became invalid during operation")
+                    remaining = total - written
+                    to_write = min(chunk, remaining)
                     
-                    to_write = min(chunk, total - written)
-                    # cryptographically secure random bytes
+                    # Ensure write size is sector-aligned
+                    to_write = ((to_write + sector_size - 1) // sector_size) * sector_size
+                    if written + to_write > total:
+                        to_write = ((remaining + sector_size - 1) // sector_size) * sector_size
+                    
+                    # Generate cryptographically secure random bytes
                     try:
                         data = _os.urandom(to_write)
-                        bytes_written = f.write(data)
+                        
+                        # Write using Windows API
+                        bytes_written, write_error = write_to_physical_drive(handle, data)
+                        if write_error:
+                            raise RuntimeError(f"Write operation failed: {write_error}")
+                        
                         if bytes_written != to_write:
                             raise RuntimeError(f"Write operation incomplete: expected {to_write}, wrote {bytes_written}")
-                        written += to_write
-                        pct = int((written / total) * 100)
-                        self.progress.emit(pct if pct <= 100 else 100)
                         
-                        # Periodic flush to ensure data is written
-                        if written % (chunk * 10) == 0:  # flush every 10 chunks
-                            f.flush()
+                        written += bytes_written
+                        pct = int((written / total) * 100)
+                        self.progress.emit(min(pct, 100))
+                        
+                        # Log progress every 100MB
+                        if written % (100 * 1024 * 1024) == 0:
+                            self.log.emit(f"Written: {written:,} bytes ({pct}%)")
                             
-                    except (OSError, IOError) as e:
-                        if e.errno == 9:  # Bad file descriptor
-                            raise RuntimeError(f"Bad file descriptor during write operation: {e}")
-                        raise RuntimeError(f"Write operation failed: {e}")
+                    except Exception as e:
+                        raise RuntimeError(f"Write operation failed at offset {written}: {e}")
                 
-                # Final flush
-                if f and not f.closed:
-                    f.flush()
+                self.log.emit(f"Successfully wrote {written:,} bytes to device")
                     
             finally:
-                if f and not f.closed:
-                    try:
-                        f.close()
-                        self.log.emit("Device file handle closed successfully")
-                    except Exception as close_ex:
-                        self.log.emit(f"Warning: Error closing file handle: {close_ex}")
+                if handle:
+                    close_physical_drive_handle(handle)
+                    self.log.emit("Device handle closed successfully")
 
             report["status"] = "completed"
             report["end_time_utc"] = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
@@ -570,14 +703,45 @@ class NullNovaApp(QWidget):
     def on_finished(self, report: dict):
         self.btn_wipe.setEnabled(True)
         self.last_report = report
-        self.log(f"Job {report.get('job_id')} finished with status: {report.get('status')}")
+        status = report.get('status')
+        self.log(f"Job {report.get('job_id')} finished with status: {status}")
+        
+        # Show detailed error information if the job failed
+        if status == "failed":
+            error_msg = report.get('error', 'Unknown error')
+            self.log(f"Error details: {error_msg}")
+            
+            # Show error dialog with troubleshooting tips
+            error_dialog = QMessageBox(self)
+            error_dialog.setIcon(QMessageBox.Critical)
+            error_dialog.setWindowTitle("Wipe Operation Failed")
+            error_dialog.setText(f"The wipe operation failed with the following error:\n\n{error_msg}")
+            
+            # Add troubleshooting information
+            troubleshooting = ""
+            if "Access denied" in error_msg or "Permission denied" in error_msg:
+                troubleshooting = "\nTroubleshooting:\n• Run the application as Administrator\n• Close any programs using the target drive\n• Disable antivirus real-time protection temporarily"
+            elif "Device is in use" in error_msg or "Sharing violation" in error_msg:
+                troubleshooting = "\nTroubleshooting:\n• Close all programs and files on the target drive\n• Restart the computer and try again\n• Check if any antivirus or backup software is accessing the drive"
+            elif "Device not found" in error_msg:
+                troubleshooting = "\nTroubleshooting:\n• Refresh the drive list and try again\n• Check if the drive is still connected\n• Verify the drive is recognized in Windows Disk Management"
+            
+            if troubleshooting:
+                error_dialog.setDetailedText(troubleshooting)
+            
+            error_dialog.exec_()
+        
         # compute a canonical hash for the session
         canonical = json.dumps(report, sort_keys=True).encode("utf-8")
         h = hashlib.sha256(canonical).hexdigest()
         report["session_hash_sha256"] = h
         self.last_report = report
         self.btn_save_report.setEnabled(True)
-        self.log("Report ready. Click 'Save Last Report JSON' to persist the certificate locally.")
+        
+        if status == "completed":
+            self.log("Report ready. Click 'Save Last Report JSON' to persist the certificate locally.")
+        else:
+            self.log("Report available despite errors. Click 'Save Last Report JSON' to save error details.")
 
     def save_last_report(self):
         if not self.last_report:
