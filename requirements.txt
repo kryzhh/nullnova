@@ -2,3 +2,5 @@ psutil==6.0.0
 pywin32; sys_platform == "win32" 
 wmi; sys_platform == "win32"
 pyudev==0.24.0; sys_platform == "linux"
+tkinter
+pycryptodome>=3.19.0
