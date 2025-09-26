@@ -170,12 +170,29 @@ def enumerate_windows_disks():
             pd_path = getattr(disk, "DeviceID", None)  # e.g. \\.\PHYSICALDRIVE0
             if not pd_path:
                 continue
-            # Normalize the device path - ensure it starts with \\.\
-            if pd_path.startswith("\\\\"):
-                pd_path = pd_path[2:]  # Remove extra backslashes
-            if not pd_path.startswith("\\\\.\\"):
-                pd_path = "\\\\.\\" + pd_path.lstrip("\\")
+            # Normalize the device path - ensure proper format
+            # WMI can return various formats like: \\.\PHYSICALDRIVE0, \\.\PhysicalDrive0, etc.
+            pd_path = pd_path.replace("/", "\\")  # Convert any forward slashes
+            
+            # Remove leading backslashes and rebuild the path
+            pd_path = pd_path.lstrip("\\")
+            
+            # Extract just the drive part (e.g., "PHYSICALDRIVE0" or "PhysicalDrive0")
+            if pd_path.startswith(".\\"):
+                pd_path = pd_path[2:]  # Remove the ".\" part
+            
+            # Ensure it contains "PHYSICALDRIVE" (case insensitive)
+            if "physicaldrive" not in pd_path.lower():
+                print(f"Skipping invalid device path: {pd_path}")
+                continue
+                
+            # Rebuild the path in the correct format
+            pd_path = f"\\\\.\\{pd_path}"
             pd["physical_device"] = pd_path
+            
+            # Debug logging
+            print(f"Enumerated device: {pd_path}")
+            
             pd["model"] = getattr(disk, "Model", "") or ""
             pd["serial"] = (getattr(disk, "SerialNumber", "") or "").strip()
             pd["size_bytes"] = int(getattr(disk, "Size", 0) or 0)
@@ -414,13 +431,29 @@ class WipeWorker(QThread):
             if not raw_path:
                 raise RuntimeError("No physical device path available for this disk.")
 
-            # normalization: ensure path begins with \\.\ (WMI might give \\.\PHYSICALDRIVE0 or \\.\PHYSICALDRIVE0)
-            if not raw_path.startswith("\\\\.\\"):
-                raw_path = "\\\\.\\\\" + raw_path.lstrip("\\")
+            # Additional normalization and validation
+            self.log.emit(f"Original device path: {raw_path}")
             
-            # Validate the device path format
-            if not raw_path.upper().startswith("\\\\.\\PHYSICALDRIVE"):
-                raise RuntimeError(f"Invalid device path format: {raw_path}")
+            # Ensure proper format
+            if not raw_path.startswith("\\\\.\\"):
+                raw_path = "\\\\.\\" + raw_path.lstrip("\\")
+            
+            # Validate the device path format (case insensitive)
+            raw_path_upper = raw_path.upper()
+            if not raw_path_upper.startswith("\\\\.\\PHYSICALDRIVE"):
+                # Try to fix common variations
+                if "PHYSICALDRIVE" in raw_path_upper:
+                    # Extract drive number
+                    parts = raw_path_upper.split("PHYSICALDRIVE")
+                    if len(parts) == 2 and parts[1].isdigit():
+                        raw_path = f"\\\\.\\PhysicalDrive{parts[1]}"
+                        self.log.emit(f"Corrected device path to: {raw_path}")
+                    else:
+                        raise RuntimeError(f"Invalid device path format: {raw_path}")
+                else:
+                    raise RuntimeError(f"Invalid device path format (missing PhysicalDrive): {raw_path}")
+            
+            self.log.emit(f"Using device path: {raw_path}")
 
             total = int(self.disk.get("size_bytes", 0))
             if total <= 0:
@@ -606,6 +639,10 @@ class NullNovaApp(QWidget):
         self.btn_save_report.setEnabled(False)
         action_layout.addWidget(self.btn_save_report)
 
+        self.btn_test_device = QPushButton("Test Device Access")
+        self.btn_test_device.clicked.connect(self.test_selected_device)
+        action_layout.addWidget(self.btn_test_device)
+
         layout.addLayout(action_layout)
 
         # Progress and logs
@@ -632,7 +669,12 @@ class NullNovaApp(QWidget):
             letters = ",".join(d.get("drive_letters", [])) or "(no letter)"
             size_gb = int(d.get("size_bytes", 0) / (1024 ** 3))
             sys_tag = "SYSTEM" if d.get("is_system") else ""
-            item_text = f"{d.get('physical_device')} | {d.get('model')} | {size_gb} GB | {letters} {sys_tag}"
+            device_path = d.get('physical_device', 'Unknown')
+            
+            # Log the device path for debugging
+            self.log(f"Found device: {device_path}")
+            
+            item_text = f"{device_path} | {d.get('model')} | {size_gb} GB | {letters} {sys_tag}"
             self.drive_list.addItem(item_text)
             # attach raw data via QListWidgetItem data hack
             item = self.drive_list.item(self.drive_list.count() - 1)
@@ -642,6 +684,39 @@ class NullNovaApp(QWidget):
         ts = datetime.datetime.utcnow().strftime("%H:%M:%S")
         self.log_list.addItem(f"[{ts}] {text}")
         self.log_list.scrollToBottom()
+
+    def test_selected_device(self):
+        """Test access to the selected device without actually wiping it."""
+        item = self.drive_list.currentItem()
+        if not item:
+            QMessageBox.warning(self, "Select Disk", "Please select a disk to test.")
+            return
+        
+        disk = item.data(Qt.UserRole)
+        device_path = disk.get("physical_device")
+        
+        if not device_path:
+            QMessageBox.critical(self, "Error", "No device path available for selected disk.")
+            return
+        
+        self.log(f"Testing access to device: {device_path}")
+        
+        # Test device access
+        try:
+            access_ok, access_msg = test_device_access(device_path)
+            if access_ok:
+                QMessageBox.information(self, "Device Test Success", 
+                    f"Device is accessible!\n\nDevice: {device_path}\nResult: {access_msg}")
+                self.log(f"Device test SUCCESS: {access_msg}")
+            else:
+                QMessageBox.warning(self, "Device Test Failed", 
+                    f"Cannot access device!\n\nDevice: {device_path}\nError: {access_msg}")
+                self.log(f"Device test FAILED: {access_msg}")
+        except Exception as e:
+            error_msg = str(e)
+            QMessageBox.critical(self, "Device Test Error", 
+                f"Test failed with exception!\n\nDevice: {device_path}\nError: {error_msg}")
+            self.log(f"Device test ERROR: {error_msg}")
 
     def start_wipe(self):
         item = self.drive_list.currentItem()
