@@ -17,6 +17,9 @@ import psutil
 import wmi
 import hashlib
 import datetime
+import subprocess
+import ctypes
+from ctypes import wintypes
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QLabel, QPushButton,
     QListWidget, QMessageBox, QProgressBar, QHBoxLayout, QRadioButton,
@@ -80,6 +83,167 @@ def enumerate_windows_disks():
     return disks
 
 # -------------------------
+# Drive unmounting utilities
+# -------------------------
+def unmount_drive_letters(drive_letters):
+    """
+    Unmount/dismount the specified drive letters before wiping.
+    Returns list of successfully unmounted drives.
+    """
+    unmounted = []
+    
+    for drive_letter in drive_letters:
+        if not drive_letter or len(drive_letter) < 2:
+            continue
+            
+        # Ensure drive letter format is correct (e.g., "C:")
+        if not drive_letter.endswith(':'):
+            drive_letter += ':'
+            
+        try:
+            # First try to lock the volume
+            volume_path = f"\\\\.\\{drive_letter}"
+            
+            # Use Windows API to dismount the volume
+            kernel32 = ctypes.windll.kernel32
+            
+            # Open handle to the volume
+            handle = kernel32.CreateFileW(
+                volume_path,
+                0x40000000 | 0x80000000,  # GENERIC_READ | GENERIC_WRITE
+                0x00000001 | 0x00000002,  # FILE_SHARE_READ | FILE_SHARE_WRITE
+                None,
+                3,  # OPEN_EXISTING
+                0,
+                None
+            )
+            
+            if handle == -1:  # INVALID_HANDLE_VALUE
+                print(f"Could not open handle to {drive_letter}")
+                continue
+                
+            try:
+                # Lock the volume (FSCTL_LOCK_VOLUME)
+                bytes_returned = wintypes.DWORD()
+                lock_result = kernel32.DeviceIoControl(
+                    handle,
+                    0x00090018,  # FSCTL_LOCK_VOLUME
+                    None, 0,
+                    None, 0,
+                    ctypes.byref(bytes_returned),
+                    None
+                )
+                
+                if lock_result:
+                    print(f"Successfully locked volume {drive_letter}")
+                    
+                    # Dismount the volume (FSCTL_DISMOUNT_VOLUME)
+                    dismount_result = kernel32.DeviceIoControl(
+                        handle,
+                        0x00090020,  # FSCTL_DISMOUNT_VOLUME
+                        None, 0,
+                        None, 0,
+                        ctypes.byref(bytes_returned),
+                        None
+                    )
+                    
+                    if dismount_result:
+                        print(f"Successfully dismounted volume {drive_letter}")
+                        unmounted.append(drive_letter)
+                    else:
+                        print(f"Failed to dismount volume {drive_letter}")
+                else:
+                    print(f"Failed to lock volume {drive_letter}")
+                    
+            finally:
+                kernel32.CloseHandle(handle)
+                
+        except Exception as e:
+            print(f"Error dismounting {drive_letter}: {e}")
+            
+    return unmounted
+
+def check_drive_usage(drive_letters):
+    """
+    Check if any processes are using the specified drives.
+    Returns list of processes using the drives.
+    """
+    using_processes = []
+    
+    for drive_letter in drive_letters:
+        if not drive_letter.endswith(':'):
+            drive_letter += ':'
+            
+        try:
+            # Get all processes
+            for proc in psutil.process_iter(['pid', 'name', 'open_files']):
+                try:
+                    open_files = proc.info['open_files']
+                    if open_files:
+                        for file_info in open_files:
+                            if file_info.path.upper().startswith(drive_letter.upper()):
+                                using_processes.append({
+                                    'pid': proc.info['pid'],
+                                    'name': proc.info['name'],
+                                    'drive': drive_letter,
+                                    'file': file_info.path
+                                })
+                                break
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+        except Exception as e:
+            print(f"Error checking drive usage for {drive_letter}: {e}")
+    
+    return using_processes
+
+def force_dismount_physical_drive(physical_device_path):
+    """
+    Force dismount all volumes on a physical drive using diskpart.
+    This is a more aggressive approach when API calls fail.
+    """
+    try:
+        # Extract drive number from path like \\.\PhysicalDrive0
+        if "PhysicalDrive" in physical_device_path:
+            drive_num = physical_device_path.split("PhysicalDrive")[-1]
+            
+            # Create diskpart script - just dismount, don't clean
+            script_content = f"""select disk {drive_num}
+detail disk
+"""
+            
+            # Write temporary script file
+            script_path = "temp_dismount.txt"
+            with open(script_path, "w") as f:
+                f.write(script_content)
+            
+            # Run diskpart with the script
+            result = subprocess.run(
+                ["diskpart", "/s", script_path],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            # Clean up script file
+            try:
+                os.remove(script_path)
+            except:
+                pass
+                
+            if result.returncode == 0:
+                print(f"Successfully accessed physical drive {drive_num} via diskpart")
+                return True
+            else:
+                print(f"Diskpart failed: {result.stderr}")
+                return False
+                
+    except Exception as e:
+        print(f"Error in force dismount: {e}")
+        return False
+    
+    return False
+
+# -------------------------
 # Worker thread for wiping
 # -------------------------
 class WipeWorker(QThread):
@@ -129,42 +293,112 @@ class WipeWorker(QThread):
             # normalization: ensure path begins with \\.\ (WMI might give \\.\PHYSICALDRIVE0 or \\.\PHYSICALDRIVE0)
             if not raw_path.startswith("\\\\.\\"):
                 raw_path = "\\\\.\\\\" + raw_path.lstrip("\\")
-            self.log.emit(f"REAL: opening raw device {raw_path} (requires admin)...")
+            
+            # Validate the device path format
+            if not raw_path.upper().startswith("\\\\.\\PHYSICALDRIVE"):
+                raise RuntimeError(f"Invalid device path format: {raw_path}")
 
             total = int(self.disk.get("size_bytes", 0))
             if total <= 0:
                 raise RuntimeError("Invalid drive size; aborting.")
+            
+            self.log.emit(f"Target device size: {total:,} bytes ({total // (1024**3)} GB)")
+            
+            # Check if the device exists before attempting to open
+            if not os.path.exists(raw_path):
+                raise RuntimeError(f"Device path does not exist: {raw_path}")
+
+            # UNMOUNT DRIVES BEFORE WIPING
+            drive_letters = self.disk.get("drive_letters", [])
+            if drive_letters:
+                # Check what processes are using the drives
+                self.log.emit("Checking for processes using the target drives...")
+                using_processes = check_drive_usage(drive_letters)
+                if using_processes:
+                    self.log.emit(f"Warning: Found {len(using_processes)} processes using the drives:")
+                    for proc in using_processes[:5]:  # Show first 5
+                        self.log.emit(f"  - {proc['name']} (PID: {proc['pid']}) using {proc['drive']}")
+                    if len(using_processes) > 5:
+                        self.log.emit(f"  ... and {len(using_processes) - 5} more processes")
+                    report["processes_using_drive"] = using_processes
+                
+                self.log.emit(f"Attempting to unmount drive letters: {', '.join(drive_letters)}")
+                unmounted = unmount_drive_letters(drive_letters)
+                if unmounted:
+                    self.log.emit(f"Successfully unmounted: {', '.join(unmounted)}")
+                    report["unmounted_drives"] = unmounted
+                else:
+                    self.log.emit("Warning: Could not unmount drives using API method")
+                    # Try force dismount as fallback
+                    self.log.emit("Attempting force dismount using diskpart...")
+                    if force_dismount_physical_drive(raw_path):
+                        self.log.emit("Force dismount successful")
+                        report["force_dismounted"] = True
+                    else:
+                        self.log.emit("Warning: Force dismount also failed - proceeding anyway")
+            
+            # Give system time to release handles after unmounting
+            self.log.emit("Waiting 2 seconds for system to release handles...")
+            time.sleep(2)
+            
+            self.log.emit(f"REAL: opening raw device {raw_path} (requires admin)...")
 
             chunk = self.chunk_mb * 1024 * 1024
             written = 0
             # Attempt to open raw device for binary write
             # This will require admin privileges
+            f = None
             try:
-                # open in binary mode
+                # open in binary mode with proper error handling
                 f = open(raw_path, "r+b", buffering=0)
+                self.log.emit(f"Successfully opened device {raw_path}")
             except PermissionError as pe:
                 raise RuntimeError("Permission denied. Please run as Administrator. " + str(pe))
+            except (OSError, IOError) as e:
+                if e.errno == 9:  # Bad file descriptor
+                    raise RuntimeError(f"Bad file descriptor - device may be in use or inaccessible: {e}")
+                raise RuntimeError(f"Failed to open raw device {raw_path}: {e}")
             except Exception as e:
-                raise RuntimeError("Failed to open raw device. " + str(e))
+                raise RuntimeError(f"Failed to open raw device {raw_path}: {e}")
 
             try:
                 # Overwrite entire device with random bytes in chunks
                 import os as _os
                 while written < total:
+                    if not f or f.closed:
+                        raise RuntimeError("File handle became invalid during operation")
+                    
                     to_write = min(chunk, total - written)
                     # cryptographically secure random bytes
-                    data = _os.urandom(to_write)
-                    f.write(data)
-                    written += to_write
-                    pct = int((written / total) * 100)
-                    self.progress.emit(pct if pct <= 100 else 100)
-                f.flush()
-                # optionally fsync not available for raw device but flush was called
+                    try:
+                        data = _os.urandom(to_write)
+                        bytes_written = f.write(data)
+                        if bytes_written != to_write:
+                            raise RuntimeError(f"Write operation incomplete: expected {to_write}, wrote {bytes_written}")
+                        written += to_write
+                        pct = int((written / total) * 100)
+                        self.progress.emit(pct if pct <= 100 else 100)
+                        
+                        # Periodic flush to ensure data is written
+                        if written % (chunk * 10) == 0:  # flush every 10 chunks
+                            f.flush()
+                            
+                    except (OSError, IOError) as e:
+                        if e.errno == 9:  # Bad file descriptor
+                            raise RuntimeError(f"Bad file descriptor during write operation: {e}")
+                        raise RuntimeError(f"Write operation failed: {e}")
+                
+                # Final flush
+                if f and not f.closed:
+                    f.flush()
+                    
             finally:
-                try:
-                    f.close()
-                except Exception:
-                    pass
+                if f and not f.closed:
+                    try:
+                        f.close()
+                        self.log.emit("Device file handle closed successfully")
+                    except Exception as close_ex:
+                        self.log.emit(f"Warning: Error closing file handle: {close_ex}")
 
             report["status"] = "completed"
             report["end_time_utc"] = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
@@ -297,6 +531,21 @@ class NullNovaApp(QWidget):
             if self.confirm_input.text().strip() != "WIPE":
                 QMessageBox.critical(self, "Type WIPE", "Type WIPE into the textbox to confirm Real destructive action.")
                 return
+            
+            # Warn about drive unmounting
+            drive_letters = disk.get("drive_letters", [])
+            if drive_letters:
+                drive_list = ", ".join(drive_letters)
+                reply = QMessageBox.question(
+                    self, "Drive Unmounting Warning",
+                    f"The following drive letters will be unmounted before wiping: {drive_list}\n"
+                    f"This will temporarily make the drives inaccessible.\n"
+                    f"Any open files on these drives may be lost.\n\n"
+                    f"Continue with unmounting and wiping?",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                if reply != QMessageBox.Yes:
+                    return
 
             # extra confirm dialog
             reply = QMessageBox.question(
